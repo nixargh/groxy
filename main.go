@@ -1,23 +1,23 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"net"
-	"time"
-	"bufio"
-	"strings"
 	"strconv"
+	"strings"
+	"time"
 )
 
 var version string = "0.1.0"
 
 type Metric struct {
-	Prefix    string       `json:"prefix,omitempty"`
-	Path      string       `json:"path,omitempty"`
-	Value     string       `json:"value,omitempty"`
-	Timestamp int64        `json:"timestamp,omitempty"`
-	Tenant    string       `json:"tenant,omitempty"`
+	Prefix    string `json:"prefix,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Timestamp int64  `json:"timestamp,omitempty"`
+	Tenant    string `json:"tenant,omitempty"`
 }
 
 func runReceiver(address string, port int, inputChan chan Metric) {
@@ -41,7 +41,7 @@ func runReceiver(address string, port int, inputChan chan Metric) {
 }
 
 func readMetric(connection net.Conn, inputChan chan Metric) {
-	connection.SetReadDeadline(time.Now().Add(5*time.Second))
+	connection.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 	metricString, err := bufio.NewReader(connection).ReadString('\n')
 	if err != nil {
@@ -62,23 +62,22 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 	metric := Metric{}
 
 	switch len(metricSlice) {
-		case 3:
-			metric.Tenant = ""
-		case 4:
-			metric.Tenant = metricSlice[3]
-		default:
-			log.Printf("Bad metric: '%s'.", metricString)
-			connection.Close()
-			return
+	case 3:
+		metric.Tenant = ""
+	case 4:
+		metric.Tenant = metricSlice[3]
+	default:
+		log.Printf("Bad metric: '%s'.", metricString)
+		connection.Close()
+		return
 	}
 
 	timestamp, err := strconv.ParseInt(metricSlice[2], 10, 64)
 
 	metric.Prefix = ""
 	metric.Path = metricSlice[0]
-	metric.Value =  metricSlice[1]
+	metric.Value = metricSlice[1]
 	metric.Timestamp = timestamp
-
 
 	inputChan <- metric
 
