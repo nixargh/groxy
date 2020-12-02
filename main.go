@@ -85,21 +85,62 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 	connection.Close()
 }
 
-func runSender(outputChan chan Metric) {
-	log.Printf("Starting Sender.\n")
+func runSender(host string, port int, outputChan chan Metric) {
+	log.Printf("Starting Sender to '%s:%d'.\n", host, port)
 
 	for {
-		time.Sleep(50 * time.Millisecond)
-		metric := <-outputChan
-		metricString := fmt.Sprintf(
-			"%s%s %s %d %s",
-			metric.Prefix,
-			metric.Path,
-			metric.Value,
-			metric.Timestamp,
-			metric.Tenant,
-		)
-		log.Printf("Out: '%s'.\n", metricString)
+		time.Sleep(5000 * time.Millisecond)
+
+		var metrics [100]string
+		// resolve
+		addresses, err := net.LookupHost(host)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+		log.Printf("Addresses: '%s'.", addresses)
+
+		// do for every address
+		for a := 0; a < len(addresses); a++ {
+			// collect a pack of metrics
+			for i := 0; i < len(metrics); i++ {
+				select {
+				case metric := <-outputChan:
+					metrics[i] = fmt.Sprintf(
+						"%s%s %s %d %s",
+						metric.Prefix,
+						metric.Path,
+						metric.Value,
+						metric.Timestamp,
+						metric.Tenant,
+					)
+				default:
+					metrics[i] = ""
+				}
+			}
+
+			// send the pack
+			go sendMetric(metrics, addresses[a], port)
+		}
+	}
+}
+
+func sendMetric(metrics [100]string, address string, port int) {
+	netAddress := fmt.Sprintf("%s:%d", address, port)
+	log.Printf("Sending a pack to: '%s'.\n", netAddress)
+
+	timeout, err := time.ParseDuration("5s")
+	connect, err := net.DialTimeout("tcp", netAddress, timeout)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	for i := 0; i < len(metrics); i++ {
+		if metrics[i] != "" {
+			log.Printf("Out: '%s'.\n", metrics[i])
+			fmt.Fprintf(connect, metrics[i]+"\n")
+		}
 	}
 }
 
@@ -154,5 +195,5 @@ func main() {
 
 	go runReceiver("127.0.0.1", 2003, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	runSender(outputChan)
+	runSender("graphite.iponweb.net", 2003, outputChan)
 }
