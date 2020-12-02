@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -88,30 +89,70 @@ func runSender(outputChan chan Metric) {
 	log.Printf("Starting Sender.\n")
 
 	for {
-		time.Sleep(5000 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		metric := <-outputChan
-		log.Printf("Out: '%s'.\n", metric)
+		metricString := fmt.Sprintf(
+			"%s%s %s %d %s",
+			metric.Prefix,
+			metric.Path,
+			metric.Value,
+			metric.Timestamp,
+			metric.Tenant,
+		)
+		log.Printf("Out: '%s'.\n", metricString)
 	}
 }
 
-func runTranformer(inputChan chan Metric, outputChan chan Metric) {
+func runTransformer(
+	inputChan chan Metric,
+	outputChan chan Metric,
+	tenant string,
+	prefix string,
+	immutablePrefix string) {
 	log.Printf("Starting Transformer.\n")
 
 	for {
 		time.Sleep(50 * time.Millisecond)
 		metric := <-inputChan
-		log.Printf("Transform: '%s'.\n", metric)
-		outputChan <- metric
+		go transformMetric(metric, outputChan, tenant, prefix, immutablePrefix)
 	}
+}
+
+func transformMetric(
+	metric Metric,
+	outputChan chan Metric,
+	tenant string,
+	prefix string,
+	immutablePrefix string) {
+	metric.Tenant = tenant
+
+	if strings.HasPrefix(metric.Path, immutablePrefix) == false {
+		if prefix != "" {
+			metric.Prefix = prefix + "."
+		}
+	}
+
+	log.Printf("Transformed: '%s'.\n", metric)
+	outputChan <- metric
 }
 
 func main() {
 	log.Println("Groxy rocks!")
 
+	var tenant string
+	var prefix string
+	var immutablePrefix string
+
+	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
+	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
+	flag.StringVar(&immutablePrefix, "immutablePrefix", "", "Do not add prefix to metrics start with")
+
+	flag.Parse()
+
 	inputChan := make(chan Metric, 1000000)
 	outputChan := make(chan Metric, 1000000)
 
 	go runReceiver("127.0.0.1", 2003, inputChan)
-	go runTranformer(inputChan, outputChan)
+	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
 	runSender(outputChan)
 }
