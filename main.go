@@ -183,10 +183,14 @@ func main() {
 	var tenant string
 	var prefix string
 	var immutablePrefix string
+	var graphiteServer string
+	var graphitePort int
 
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
 	flag.StringVar(&immutablePrefix, "immutablePrefix", "", "Do not add prefix to metrics start with")
+	flag.StringVar(&graphiteServer, "graphiteServer", "", "Graphite server DNS name")
+	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server DNS name")
 
 	flag.Parse()
 
@@ -195,5 +199,5 @@ func main() {
 
 	go runReceiver("127.0.0.1", 2003, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	runSender("graphite.iponweb.net", 2003, outputChan)
+	runSender(graphiteServer, graphitePort, outputChan)
 }
