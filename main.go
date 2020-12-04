@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var version string = "0.1.0"
+var version string = "0.1.1"
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
