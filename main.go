@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -85,7 +86,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 	connection.Close()
 }
 
-func runSender(host string, port int, outputChan chan Metric) {
+func runSender(host string, port int, outputChan chan Metric, ignoreCert bool) {
 	log.Printf("Starting Sender to '%s:%d'.\n", host, port)
 
 	for {
@@ -120,17 +121,24 @@ func runSender(host string, port int, outputChan chan Metric) {
 			}
 
 			// send the pack
-			go sendMetric(metrics, addresses[a], port)
+			go sendMetric(metrics, addresses[a], port, ignoreCert)
 		}
 	}
 }
 
-func sendMetric(metrics [100]string, address string, port int) {
+func sendMetric(metrics [100]string, address string, port int, ignoreCert bool) {
 	netAddress := fmt.Sprintf("%s:%d", address, port)
 	log.Printf("Sending a pack to: '%s'.\n", netAddress)
 
 	timeout, err := time.ParseDuration("5s")
-	connect, err := net.DialTimeout("tcp", netAddress, timeout)
+
+	dialer := &net.Dialer{Timeout: timeout}
+
+	connection, err := tls.DialWithDialer(
+		dialer,
+		"tcp",
+		netAddress,
+		&tls.Config{InsecureSkipVerify: ignoreCert})
 	if err != nil {
 		log.Println(err)
 		return
@@ -139,9 +147,11 @@ func sendMetric(metrics [100]string, address string, port int) {
 	for i := 0; i < len(metrics); i++ {
 		if metrics[i] != "" {
 			log.Printf("Out: '%s'.\n", metrics[i])
-			fmt.Fprintf(connect, metrics[i]+"\n")
+			fmt.Fprintf(connection, metrics[i]+"\n")
 		}
 	}
+
+	connection.Close()
 }
 
 func runTransformer(
@@ -167,8 +177,8 @@ func transformMetric(
 	immutablePrefix string) {
 	metric.Tenant = tenant
 
-	if strings.HasPrefix(metric.Path, immutablePrefix) == false {
-		if prefix != "" {
+	if prefix != "" {
+		if immutablePrefix == "" || strings.HasPrefix(metric.Path, immutablePrefix) == false {
 			metric.Prefix = prefix + "."
 		}
 	}
@@ -183,21 +193,32 @@ func main() {
 	var tenant string
 	var prefix string
 	var immutablePrefix string
-	var graphiteServer string
+	var graphiteAddress string
 	var graphitePort int
+	var address string
+	var port int
+	var ignoreCert bool
 
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
 	flag.StringVar(&immutablePrefix, "immutablePrefix", "", "Do not add prefix to metrics start with")
-	flag.StringVar(&graphiteServer, "graphiteServer", "", "Graphite server DNS name")
+	flag.StringVar(&graphiteAddress, "graphiteAddress", "", "Graphite server DNS name")
 	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server DNS name")
+	flag.StringVar(&address, "address", "127.0.0.1", "Proxy bind address")
+	flag.IntVar(&port, "port", 2003, "Proxy bind port")
+	flag.BoolVar(&ignoreCert, "ignoreCert", false, "Do not verify Graphite server certificate")
 
 	flag.Parse()
 
 	inputChan := make(chan Metric, 1000000)
 	outputChan := make(chan Metric, 1000000)
 
-	go runReceiver("127.0.0.1", 2003, inputChan)
+	go runReceiver(address, port, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	runSender(graphiteServer, graphitePort, outputChan)
+	go runSender(graphiteAddress, graphitePort, outputChan, ignoreCert)
+
+	log.Println("Starting a wating loop.")
+	for {
+		time.Sleep(10000 * time.Millisecond)
+	}
 }
