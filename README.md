@@ -18,4 +18,4 @@ Run with some options
 ## Test
 Send metric like this
 
-`echo "test1.bash.stats 42 `` ` ``date +%s`` ` ``" | nc localhost 2004`
+``echo "test1.bash.stats 42 `date +%s`" | nc localhost 2004``
