@@ -10,9 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	//	"github.com/pkg/profile"
 )
 
-var version string = "0.1.1"
+var version string = "0.2.0"
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -27,131 +28,146 @@ func runReceiver(address string, port int, inputChan chan Metric) {
 
 	log.Printf("Starting Receiver at: '%s'.\n", netAddress)
 
-	ln, err := net.Listen("tcp", netAddress)
+	ln, err := net.Listen("tcp4", netAddress)
 	if err != nil {
-		log.Print(err)
+		log.Fatalf("Listener error: '%s'.", err)
 	}
+	defer ln.Close()
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Print(err)
-		} else {
-			go readMetric(conn, inputChan)
+			log.Printf("Reader accept error: '%s'.", err)
+			return
 		}
+		go readMetric(conn, inputChan)
 	}
 }
 
 func readMetric(connection net.Conn, inputChan chan Metric) {
-	connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	connection.SetReadDeadline(time.Now().Add(600 * time.Second))
 
-	metricString, err := bufio.NewReader(connection).ReadString('\n')
-	if err != nil {
-		log.Print(err)
-		return
+	scanner := bufio.NewScanner(connection)
+	for scanner.Scan() {
+		metricString := scanner.Text()
+
+		log.Printf("In: '%s'.", metricString)
+		metricSlice := strings.Split(metricString, " ")
+
+		metric := Metric{}
+
+		switch len(metricSlice) {
+		case 3:
+			metric.Tenant = ""
+		case 4:
+			metric.Tenant = metricSlice[3]
+		default:
+			log.Printf("Bad metric: '%s'.", metricString)
+			connection.Close()
+			return
+		}
+
+		timestamp, err := strconv.ParseInt(metricSlice[2], 10, 64)
+		if err != nil {
+			log.Printf("Timestamp error: '%s'.", err)
+			return
+		}
+
+		metric.Prefix = ""
+		metric.Path = metricSlice[0]
+		metric.Value = metricSlice[1]
+		metric.Timestamp = timestamp
+
+		inputChan <- metric
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("Error reading input:", err)
 	}
 
-	metricString = strings.TrimSuffix(metricString, "\n")
-	log.Printf("In: '%s'.", metricString)
-
-	metricSlice := strings.Split(metricString, " ")
-
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	metric := Metric{}
-
-	switch len(metricSlice) {
-	case 3:
-		metric.Tenant = ""
-	case 4:
-		metric.Tenant = metricSlice[3]
-	default:
-		log.Printf("Bad metric: '%s'.", metricString)
-		connection.Close()
-		return
-	}
-
-	timestamp, err := strconv.ParseInt(metricSlice[2], 10, 64)
-
-	metric.Prefix = ""
-	metric.Path = metricSlice[0]
-	metric.Value = metricSlice[1]
-	metric.Timestamp = timestamp
-
-	inputChan <- metric
+	//	metricString = strings.TrimSuffix(metricString, "\n")
 
 	connection.Close()
 }
 
-func runSender(host string, port int, outputChan chan Metric, ignoreCert bool) {
+func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCert bool) {
 	log.Printf("Starting Sender to '%s:%d'.\n", host, port)
 
 	for {
-		time.Sleep(5000 * time.Millisecond)
-
 		var metrics [100]string
 		// resolve
-		addresses, err := net.LookupHost(host)
-		if err != nil {
-			log.Print(err)
-			return
-		}
-		log.Printf("Addresses: '%s'.", addresses)
-
-		// do for every address
-		for a := 0; a < len(addresses); a++ {
-			// collect a pack of metrics
-			for i := 0; i < len(metrics); i++ {
-				select {
-				case metric := <-outputChan:
-					metrics[i] = fmt.Sprintf(
-						"%s%s %s %d %s",
-						metric.Prefix,
-						metric.Path,
-						metric.Value,
-						metric.Timestamp,
-						metric.Tenant,
-					)
-				default:
-					metrics[i] = ""
+		/*		addresses, err := net.LookupHost(host)
+				if err != nil {
+					log.Print(err)
+					return
 				}
-			}
+				log.Printf("Addresses: '%s'.", addresses)
 
-			// send the pack
-			go sendMetric(metrics, addresses[a], port, ignoreCert)
+				// do for every address
+				for a := 0; a < len(addresses); a++ {
+		*/
+		// collect a pack of metrics
+		for i := 0; i < len(metrics); i++ {
+			select {
+			case metric := <-outputChan:
+				metrics[i] = fmt.Sprintf(
+					"%s%s %s %d %s",
+					metric.Prefix,
+					metric.Path,
+					metric.Value,
+					metric.Timestamp,
+					metric.Tenant,
+				)
+			default:
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
+
+		// send the pack
+		go sendMetric(metrics, host, port, TLS, ignoreCert)
+		//		}
 	}
 }
 
-func sendMetric(metrics [100]string, address string, port int, ignoreCert bool) {
+func sendMetric(metrics [100]string, address string, port int, TLS bool, ignoreCert bool) {
 	netAddress := fmt.Sprintf("%s:%d", address, port)
 	log.Printf("Sending a pack to: '%s'.\n", netAddress)
+	errors := 0
 
-	timeout, err := time.ParseDuration("5s")
-
+	timeout, err := time.ParseDuration("10s")
 	dialer := &net.Dialer{Timeout: timeout}
 
-	connection, err := tls.DialWithDialer(
-		dialer,
-		"tcp",
-		netAddress,
-		&tls.Config{InsecureSkipVerify: ignoreCert})
+	var connection net.Conn
+
+	if TLS {
+		connection, err = tls.DialWithDialer(
+			dialer,
+			"tcp4",
+			netAddress,
+			&tls.Config{InsecureSkipVerify: ignoreCert})
+	} else {
+		connection, err = dialer.Dial("tcp4", netAddress)
+	}
 	if err != nil {
-		log.Println(err)
+		log.Printf("Dialer error: '%s'.", err)
 		return
 	}
+	defer connection.Close()
+	connection.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+	log.Printf("Connection remote address: '%s'.\n", connection.RemoteAddr())
 
 	for i := 0; i < len(metrics); i++ {
 		if metrics[i] != "" {
-			log.Printf("Out: '%s'.\n", metrics[i])
-			fmt.Fprintf(connection, metrics[i]+"\n")
+			dataLength, err := connection.Write([]byte(metrics[i] + "\n"))
+			if err != nil {
+				log.Printf("Connection write error: '%s'.", err)
+				errors++
+			} else {
+				log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metrics[i])
+			}
 		}
 	}
-
-	connection.Close()
+	log.Printf("The pack is sent with %d error(s).\n", errors)
 }
 
 func runTransformer(
@@ -163,9 +179,12 @@ func runTransformer(
 	log.Printf("Starting Transformer.\n")
 
 	for {
-		time.Sleep(50 * time.Millisecond)
-		metric := <-inputChan
-		go transformMetric(metric, outputChan, tenant, prefix, immutablePrefix)
+		select {
+		case metric := <-inputChan:
+			go transformMetric(metric, outputChan, tenant, prefix, immutablePrefix)
+		default:
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 }
 
@@ -188,7 +207,9 @@ func transformMetric(
 }
 
 func main() {
-	log.Println("Groxy rocks!")
+	//	defer profile.Start().Stop()
+
+	log.Printf("Groxy rocks! (v%s)\n", version)
 
 	var tenant string
 	var prefix string
@@ -197,6 +218,7 @@ func main() {
 	var graphitePort int
 	var address string
 	var port int
+	var TLS bool
 	var ignoreCert bool
 
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
@@ -206,6 +228,7 @@ func main() {
 	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server DNS name")
 	flag.StringVar(&address, "address", "127.0.0.1", "Proxy bind address")
 	flag.IntVar(&port, "port", 2003, "Proxy bind port")
+	flag.BoolVar(&TLS, "TLS", false, "Use TLS encrypted connection")
 	flag.BoolVar(&ignoreCert, "ignoreCert", false, "Do not verify Graphite server certificate")
 
 	flag.Parse()
@@ -215,10 +238,10 @@ func main() {
 
 	go runReceiver(address, port, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	go runSender(graphiteAddress, graphitePort, outputChan, ignoreCert)
+	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert)
 
-	log.Println("Starting a wating loop.")
+	log.Println("Starting a waiting loop.")
 	for {
-		time.Sleep(10000 * time.Millisecond)
+		time.Sleep(20 * time.Second)
 	}
 }
