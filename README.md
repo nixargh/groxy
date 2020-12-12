@@ -13,7 +13,7 @@ Get help
 
 Run with some options
 
-`./groxy -port 2004 -graphiteAddress localhost -tenant techops -prefix "groxy" -immutablePrefix "test." -tls -ignoreCert true`
+`./groxy -port 2004 -graphiteAddress localhost -tenant techops -prefix "groxy" -immutablePrefix "test." -TLS -ignoreCert true`
 
 ## Test
 Send metric like this
