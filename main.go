@@ -13,7 +13,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.2.0"
+var version string = "0.3.0"
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -143,7 +143,13 @@ func sendMetric(metrics [100]string, address string, port int, TLS bool, ignoreC
 			dialer,
 			"tcp4",
 			netAddress,
-			&tls.Config{InsecureSkipVerify: ignoreCert})
+			&tls.Config{
+				InsecureSkipVerify: ignoreCert,
+				MinVersion: tls.VersionTLS12,
+				MaxVersion: tls.VersionTLS12,
+				DynamicRecordSizingDisabled: false,
+			},
+		)
 	} else {
 		connection, err = dialer.Dial("tcp4", netAddress)
 	}
@@ -152,7 +158,7 @@ func sendMetric(metrics [100]string, address string, port int, TLS bool, ignoreC
 		return
 	}
 	defer connection.Close()
-	connection.SetReadDeadline(time.Now().Add(30 * time.Second))
+	connection.SetDeadline(time.Now().Add(30 * time.Second))
 
 	log.Printf("Connection remote address: '%s'.\n", connection.RemoteAddr())
 
