@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Changed
+- Create multiple connection for Sender and send a number of packs to each before close.
+
 ## [0.3.0] - 2020-12-16
 ### Fixed
 - Send connection TLS version pinned on *1.2* which fixed a **CD** termination error on Haproxy side.

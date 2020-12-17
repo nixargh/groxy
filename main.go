@@ -93,50 +93,57 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 	log.Printf("Starting Sender to '%s:%d'.\n", host, port)
 
 	for {
-		var metrics [100]string
-		// resolve
-		/*		addresses, err := net.LookupHost(host)
-				if err != nil {
-					log.Print(err)
-					return
-				}
-				log.Printf("Addresses: '%s'.", addresses)
-
-				// do for every address
-				for a := 0; a < len(addresses); a++ {
-		*/
-		// collect a pack of metrics
-		for i := 0; i < len(metrics); i++ {
-			select {
-			case metric := <-outputChan:
-				metrics[i] = fmt.Sprintf(
-					"%s%s %s %d %s",
-					metric.Prefix,
-					metric.Path,
-					metric.Value,
-					metric.Timestamp,
-					metric.Tenant,
-				)
-			default:
-				time.Sleep(100 * time.Millisecond)
+		var connections [4]net.Conn
+		for n := 0; n < len(connections); n++ {
+			// Create a new one
+			connection, err := createConnection(host, port, TLS, ignoreCert)
+			if err != nil {
+				log.Printf("Can't create connection: '%s'.", err)
 			}
+			connections[n] = connection
 		}
 
-		// send the pack
-		go sendMetric(metrics, host, port, TLS, ignoreCert)
-		//		}
+		for pack := 0; pack < 100; pack++ {
+			var metrics [100]string
+
+			n := pack % len(connections)
+
+			// collect a pack of metrics
+			for i := 0; i < len(metrics); i++ {
+				select {
+				case metric := <-outputChan:
+					metrics[i] = fmt.Sprintf(
+						"%s%s %s %d %s",
+						metric.Prefix,
+						metric.Path,
+						metric.Value,
+						metric.Timestamp,
+						metric.Tenant,
+					)
+				default:
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
+
+			// send the pack
+			go sendMetric(metrics, connections[n])
+		}
+		for n := 0; n < len(connections); n++ {
+			// Close the old one
+			connections[n].Close()
+		}
 	}
 }
 
-func sendMetric(metrics [100]string, address string, port int, TLS bool, ignoreCert bool) {
+func createConnection(address string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
 	netAddress := fmt.Sprintf("%s:%d", address, port)
-	log.Printf("Sending a pack to: '%s'.\n", netAddress)
-	errors := 0
+	log.Printf("Connecting to: '%s'.\n", netAddress)
 
-	timeout, err := time.ParseDuration("10s")
+	timeout, _ := time.ParseDuration("10s")
 	dialer := &net.Dialer{Timeout: timeout}
 
 	var connection net.Conn
+	var err error
 
 	if TLS {
 		connection, err = tls.DialWithDialer(
@@ -144,9 +151,9 @@ func sendMetric(metrics [100]string, address string, port int, TLS bool, ignoreC
 			"tcp4",
 			netAddress,
 			&tls.Config{
-				InsecureSkipVerify: ignoreCert,
-				MinVersion: tls.VersionTLS12,
-				MaxVersion: tls.VersionTLS12,
+				InsecureSkipVerify:          ignoreCert,
+				MinVersion:                  tls.VersionTLS12,
+				MaxVersion:                  tls.VersionTLS12,
 				DynamicRecordSizingDisabled: false,
 			},
 		)
@@ -155,12 +162,16 @@ func sendMetric(metrics [100]string, address string, port int, TLS bool, ignoreC
 	}
 	if err != nil {
 		log.Printf("Dialer error: '%s'.", err)
-		return
+		return connection, err
 	}
-	defer connection.Close()
-	connection.SetDeadline(time.Now().Add(30 * time.Second))
+	connection.SetDeadline(time.Now().Add(600 * time.Second))
 
 	log.Printf("Connection remote address: '%s'.\n", connection.RemoteAddr())
+	return connection, err
+}
+
+func sendMetric(metrics [100]string, connection net.Conn) {
+	errors := 0
 
 	for i := 0; i < len(metrics); i++ {
 		if metrics[i] != "" {
