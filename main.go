@@ -3,13 +3,17 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gorilla/mux"
 	//	"github.com/pkg/profile"
 )
 
@@ -21,6 +25,40 @@ type Metric struct {
 	Value     string `json:"value,omitempty"`
 	Timestamp int64  `json:"timestamp,omitempty"`
 	Tenant    string `json:"tenant,omitempty"`
+}
+
+type State struct {
+	In              int64 `json:"in"`
+	Out             int64 `json:"out"`
+	Transformed     int64 `json:"transformed"`
+	Bad             int64 `json:"bad"`
+	SendError       int64 `json:"send_error"`
+	InMpm           int64 `json:"in_mpm"`
+	OutMpm          int64 `json:"out_mpm"`
+	BadMpm          int64 `json:"bad_mpm"`
+	TransformedMpm  int64 `json:"transformed_mpm"`
+	Connection      int64 `json:"connection"`
+	ConnectionLive  int64 `json:"connection_live"`
+	ConnectionError int64 `json:"connection_error"`
+	OutQueue        int64 `json:"out_queue"`
+	TransformQueue  int64 `json:"transform_queue"`
+}
+
+var state State
+
+func runRouter(address string, port int) {
+	netAddress := fmt.Sprintf("%s:%d", address, port)
+	log.Printf("Starting Stats server at: '%s'.\n", netAddress)
+
+	// Create HTTP router
+	router := mux.NewRouter()
+	router.HandleFunc("/stats", getState).Methods("GET")
+
+	log.Fatal(http.ListenAndServe(netAddress, router))
+}
+
+func getState(w http.ResponseWriter, req *http.Request) {
+	json.NewEncoder(w).Encode(state)
 }
 
 func runReceiver(address string, port int, inputChan chan Metric) {
@@ -63,6 +101,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 			metric.Tenant = metricSlice[3]
 		default:
 			log.Printf("Bad metric: '%s'.", metricString)
+			state.Bad++
 			connection.Close()
 			return
 		}
@@ -79,12 +118,12 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		metric.Timestamp = timestamp
 
 		inputChan <- metric
+		state.In++
+		state.TransformQueue++
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("Error reading input:", err)
 	}
-
-	//	metricString = strings.TrimSuffix(metricString, "\n")
 
 	connection.Close()
 }
@@ -94,13 +133,18 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 
 	for {
 		var connections [4]net.Conn
-		for n := 0; n < len(connections); n++ {
+		for n := 0; n < len(connections); {
 			// Create a new one
 			connection, err := createConnection(host, port, TLS, ignoreCert)
 			if err != nil {
 				log.Printf("Can't create connection: '%s'.", err)
+				state.ConnectionError++
+			} else {
+				connections[n] = connection
+				n++
+				state.Connection++
+				state.ConnectionLive++
 			}
-			connections[n] = connection
 		}
 
 		for pack := 0; pack < 100; pack++ {
@@ -131,6 +175,7 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 		for n := 0; n < len(connections); n++ {
 			// Close the old one
 			connections[n].Close()
+			state.ConnectionLive--
 		}
 	}
 }
@@ -179,8 +224,13 @@ func sendMetric(metrics [100]string, connection net.Conn) {
 			if err != nil {
 				log.Printf("Connection write error: '%s'.", err)
 				errors++
+				state.SendError++
+
+				// Here we must return metric to OutQueue
 			} else {
 				log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metrics[i])
+				state.Out++
+				state.OutQueue--
 			}
 		}
 	}
@@ -221,6 +271,11 @@ func transformMetric(
 
 	log.Printf("Transformed: '%s'.\n", metric)
 	outputChan <- metric
+
+	// Update state
+	state.Transformed++
+	state.TransformQueue--
+	state.OutQueue++
 }
 
 func main() {
@@ -233,6 +288,8 @@ func main() {
 	var immutablePrefix string
 	var graphiteAddress string
 	var graphitePort int
+	var statsAddress string
+	var statsPort int
 	var address string
 	var port int
 	var TLS bool
@@ -243,6 +300,8 @@ func main() {
 	flag.StringVar(&immutablePrefix, "immutablePrefix", "", "Do not add prefix to metrics start with")
 	flag.StringVar(&graphiteAddress, "graphiteAddress", "", "Graphite server DNS name")
 	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server DNS name")
+	flag.StringVar(&statsAddress, "statsAddress", "127.0.0.1", "Proxy stats bind address")
+	flag.IntVar(&statsPort, "statsPort", 3003, "Proxy stats port")
 	flag.StringVar(&address, "address", "127.0.0.1", "Proxy bind address")
 	flag.IntVar(&port, "port", 2003, "Proxy bind port")
 	flag.BoolVar(&TLS, "TLS", false, "Use TLS encrypted connection")
@@ -250,15 +309,29 @@ func main() {
 
 	flag.Parse()
 
-	inputChan := make(chan Metric, 1000000)
-	outputChan := make(chan Metric, 1000000)
+	inputChan := make(chan Metric, 10000000)
+	outputChan := make(chan Metric, 10000000)
 
 	go runReceiver(address, port, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
 	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert)
+	go runRouter(statsAddress, statsPort)
 
 	log.Println("Starting a waiting loop.")
 	for {
-		time.Sleep(20 * time.Second)
+		in := state.In
+		out := state.Out
+		transformed := state.Transformed
+		bad := state.Bad
+
+		time.Sleep(60 * time.Second)
+
+		// Calculate MPMs
+		state.InMpm = state.In - in
+		state.OutMpm = state.Out - out
+		state.TransformedMpm = state.Transformed - transformed
+		state.BadMpm = state.Bad - bad
+
+		log.Printf("State: %s.", state)
 	}
 }

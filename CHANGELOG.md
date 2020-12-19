@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ### Changed
 - Create multiple connection for Sender and send a number of packs to each before close.
 
+### Added
+- Stats server that returns current state by HTTP.
+
 ## [0.3.0] - 2020-12-16
 ### Fixed
 - Send connection TLS version pinned on *1.2* which fixed a **CD** termination error on Haproxy side.
