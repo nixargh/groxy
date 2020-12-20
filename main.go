@@ -17,7 +17,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.3.0"
+var version string = "0.4.0"
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -38,7 +38,7 @@ type State struct {
 	BadMpm          int64 `json:"bad_mpm"`
 	TransformedMpm  int64 `json:"transformed_mpm"`
 	Connection      int64 `json:"connection"`
-	ConnectionLive  int64 `json:"connection_live"`
+	ConnectionAlive int64 `json:"connection_alive"`
 	ConnectionError int64 `json:"connection_error"`
 	OutQueue        int64 `json:"out_queue"`
 	TransformQueue  int64 `json:"transform_queue"`
@@ -102,6 +102,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		default:
 			log.Printf("Bad metric: '%s'.", metricString)
 			state.Bad++
+			state.TransformQueue--
 			connection.Close()
 			return
 		}
@@ -109,6 +110,8 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		timestamp, err := strconv.ParseInt(metricSlice[2], 10, 64)
 		if err != nil {
 			log.Printf("Timestamp error: '%s'.", err)
+			state.Bad++
+			state.TransformQueue--
 			return
 		}
 
@@ -133,6 +136,8 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 
 	for {
 		var connections [4]net.Conn
+
+		// Create connections
 		for n := 0; n < len(connections); {
 			// Create a new one
 			connection, err := createConnection(host, port, TLS, ignoreCert)
@@ -143,41 +148,80 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 				connections[n] = connection
 				n++
 				state.Connection++
-				state.ConnectionLive++
+				state.ConnectionAlive++
 			}
 		}
 
+		// Send some packs of metrics
 		for pack := 0; pack < 100; pack++ {
-			var metrics [100]string
+			metrics := make([]Metric, 0)
 
 			n := pack % len(connections)
 
 			// collect a pack of metrics
-			for i := 0; i < len(metrics); i++ {
+			for i := 0; i < 100; i++ {
 				select {
 				case metric := <-outputChan:
-					metrics[i] = fmt.Sprintf(
-						"%s%s %s %d %s",
-						metric.Prefix,
-						metric.Path,
-						metric.Value,
-						metric.Timestamp,
-						metric.Tenant,
-					)
+					metrics = append(metrics, metric)
 				default:
 					time.Sleep(100 * time.Millisecond)
 				}
 			}
 
 			// send the pack
-			go sendMetric(metrics, connections[n])
+			if len(metrics) > 0 {
+				go sendMetric(metrics, connections[n], outputChan)
+			}
 		}
+
+		// Close connections
 		for n := 0; n < len(connections); n++ {
 			// Close the old one
-			connections[n].Close()
-			state.ConnectionLive--
+			defer connections[n].Close()
+			state.ConnectionAlive--
 		}
 	}
+}
+
+func sendMetric(metrics []Metric, connection net.Conn, outputChan chan Metric) {
+	sent := 0
+	returned := 0
+	connectionAlive := true
+
+	for i := 0; i < len(metrics); i++ {
+		metricString := fmt.Sprintf(
+			"%s%s %s %d %s",
+			metrics[i].Prefix,
+			metrics[i].Path,
+			metrics[i].Value,
+			metrics[i].Timestamp,
+			metrics[i].Tenant,
+		)
+
+		// If connection is dead - just return metrics to outputChan
+		if connectionAlive {
+			dataLength, err := connection.Write([]byte(metricString + "\n"))
+			if err != nil {
+				log.Printf("Connection write error: '%s'.", err)
+				state.SendError++
+
+				connectionAlive = false
+
+				// Here we must return metric to ResendQueue
+				outputChan <- metrics[i]
+				returned++
+			} else {
+				log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metricString)
+				sent++
+				state.Out++
+				state.OutQueue--
+			}
+		} else {
+			outputChan <- metrics[i]
+			returned++
+		}
+	}
+	log.Printf("The pack is finished: sent=%d; returned=%d.\n", sent, returned)
 }
 
 func createConnection(address string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
@@ -209,32 +253,10 @@ func createConnection(address string, port int, TLS bool, ignoreCert bool) (net.
 		log.Printf("Dialer error: '%s'.", err)
 		return connection, err
 	}
-	connection.SetDeadline(time.Now().Add(600 * time.Second))
+	connection.SetDeadline(time.Now().Add(1200 * time.Second))
 
 	log.Printf("Connection remote address: '%s'.\n", connection.RemoteAddr())
 	return connection, err
-}
-
-func sendMetric(metrics [100]string, connection net.Conn) {
-	errors := 0
-
-	for i := 0; i < len(metrics); i++ {
-		if metrics[i] != "" {
-			dataLength, err := connection.Write([]byte(metrics[i] + "\n"))
-			if err != nil {
-				log.Printf("Connection write error: '%s'.", err)
-				errors++
-				state.SendError++
-
-				// Here we must return metric to OutQueue
-			} else {
-				log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metrics[i])
-				state.Out++
-				state.OutQueue--
-			}
-		}
-	}
-	log.Printf("The pack is sent with %d error(s).\n", errors)
 }
 
 func runTransformer(
