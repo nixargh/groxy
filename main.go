@@ -17,7 +17,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.4.0"
+var version string = "0.4.1"
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -102,7 +102,6 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		default:
 			log.Printf("Bad metric: '%s'.", metricString)
 			state.Bad++
-			state.TransformQueue--
 			connection.Close()
 			return
 		}
@@ -111,7 +110,6 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		if err != nil {
 			log.Printf("Timestamp error: '%s'.", err)
 			state.Bad++
-			state.TransformQueue--
 			return
 		}
 
@@ -177,7 +175,7 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 		// Close connections
 		for n := 0; n < len(connections); n++ {
 			// Close the old one
-			defer connections[n].Close()
+			connections[n].Close()
 			state.ConnectionAlive--
 		}
 	}
