@@ -17,7 +17,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.4.1"
+var version string = "0.5.0"
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -133,92 +133,83 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 	log.Printf("Starting Sender to '%s:%d'.\n", host, port)
 
 	for {
-		var connections [4]net.Conn
+		// Create output connection
+		connection, err := createConnection(host, port, TLS, ignoreCert)
+		if err != nil {
+			log.Printf("Can't create connection: '%s'.", err)
+			state.ConnectionError++
+			time.Sleep(5 * time.Second)
+			continue
+		} else {
+			state.Connection++
+			state.ConnectionAlive++
+		}
 
-		// Create connections
-		for n := 0; n < len(connections); {
-			// Create a new one
-			connection, err := createConnection(host, port, TLS, ignoreCert)
-			if err != nil {
-				log.Printf("Can't create connection: '%s'.", err)
-				state.ConnectionError++
-			} else {
-				connections[n] = connection
-				n++
-				state.Connection++
-				state.ConnectionAlive++
+		// collect a pack of metrics
+		var metrics [1000]Metric
+
+		for i := 0; i < len(metrics); i++ {
+			select {
+			case metric := <-outputChan:
+				metrics[i] = metric
+			default:
+				metrics[i] = Metric{}
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 
-		// Send some packs of metrics
-		for pack := 0; pack < 100; pack++ {
-			metrics := make([]Metric, 0)
-
-			n := pack % len(connections)
-
-			// collect a pack of metrics
-			for i := 0; i < 100; i++ {
-				select {
-				case metric := <-outputChan:
-					metrics = append(metrics, metric)
-				default:
-					time.Sleep(100 * time.Millisecond)
-				}
-			}
-
-			// send the pack
-			if len(metrics) > 0 {
-				go sendMetric(metrics, connections[n], outputChan)
-			}
-		}
-
-		// Close connections
-		for n := 0; n < len(connections); n++ {
-			// Close the old one
-			connections[n].Close()
-			state.ConnectionAlive--
+		// send the pack
+		if len(metrics) > 0 {
+			go sendMetric(&metrics, connection, outputChan)
 		}
 	}
 }
 
-func sendMetric(metrics []Metric, connection net.Conn, outputChan chan Metric) {
+func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metric) {
 	sent := 0
 	returned := 0
 	connectionAlive := true
 
+	emptyMetric := Metric{}
+
 	for i := 0; i < len(metrics); i++ {
-		metricString := fmt.Sprintf(
-			"%s%s %s %d %s",
-			metrics[i].Prefix,
-			metrics[i].Path,
-			metrics[i].Value,
-			metrics[i].Timestamp,
-			metrics[i].Tenant,
-		)
+		if metrics[i] != emptyMetric {
+			metricString := fmt.Sprintf(
+				"%s%s %s %d %s",
+				metrics[i].Prefix,
+				metrics[i].Path,
+				metrics[i].Value,
+				metrics[i].Timestamp,
+				metrics[i].Tenant,
+			)
 
-		// If connection is dead - just return metrics to outputChan
-		if connectionAlive {
-			dataLength, err := connection.Write([]byte(metricString + "\n"))
-			if err != nil {
-				log.Printf("Connection write error: '%s'.", err)
-				state.SendError++
+			// If connection is dead - just return metrics to outputChan
+			if connectionAlive {
+				dataLength, err := connection.Write([]byte(metricString + "\n"))
+				if err != nil {
+					log.Printf("Connection write error: '%s'.", err)
+					state.SendError++
 
-				connectionAlive = false
+					connectionAlive = false
 
-				// Here we must return metric to ResendQueue
+					// Here we must return metric to ResendQueue
+					outputChan <- metrics[i]
+					returned++
+				} else {
+					log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metricString)
+					sent++
+					state.Out++
+					state.OutQueue--
+				}
+			} else {
 				outputChan <- metrics[i]
 				returned++
-			} else {
-				log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metricString)
-				sent++
-				state.Out++
-				state.OutQueue--
 			}
-		} else {
-			outputChan <- metrics[i]
-			returned++
 		}
 	}
+
+	connection.Close()
+	state.ConnectionAlive--
 	log.Printf("The pack is finished: sent=%d; returned=%d.\n", sent, returned)
 }
 
@@ -251,7 +242,7 @@ func createConnection(address string, port int, TLS bool, ignoreCert bool) (net.
 		log.Printf("Dialer error: '%s'.", err)
 		return connection, err
 	}
-	connection.SetDeadline(time.Now().Add(1200 * time.Second))
+	connection.SetDeadline(time.Now().Add(600 * time.Second))
 
 	log.Printf("Connection remote address: '%s'.\n", connection.RemoteAddr())
 	return connection, err
