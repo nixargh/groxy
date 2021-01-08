@@ -17,7 +17,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.5.0"
+var version string = "0.6.0"
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -253,8 +253,8 @@ func runTransformer(
 	outputChan chan Metric,
 	tenant string,
 	prefix string,
-	immutablePrefix string) {
-	log.Printf("Starting Transformer.\n")
+	immutablePrefix []string) {
+	log.Printf("Starting Transformer: tenant='%s', prefix='%s', immutablePrefix='%s'.\n", tenant, prefix, immutablePrefix)
 
 	for {
 		select {
@@ -271,11 +271,17 @@ func transformMetric(
 	outputChan chan Metric,
 	tenant string,
 	prefix string,
-	immutablePrefix string) {
+	immutablePrefix []string) {
 	metric.Tenant = tenant
 
 	if prefix != "" {
-		if immutablePrefix == "" || strings.HasPrefix(metric.Path, immutablePrefix) == false {
+		mutate := true
+		for i := range immutablePrefix {
+			if strings.HasPrefix(metric.Path, immutablePrefix[i]) == true {
+				mutate = false
+			}
+		}
+		if mutate {
 			metric.Prefix = prefix + "."
 		}
 	}
@@ -289,6 +295,17 @@ func transformMetric(
 	state.OutQueue++
 }
 
+type arrayFlags []string
+
+func (i *arrayFlags) String() string {
+	return "my string representation"
+}
+
+func (i *arrayFlags) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
 func main() {
 	//	defer profile.Start().Stop()
 
@@ -296,7 +313,7 @@ func main() {
 
 	var tenant string
 	var prefix string
-	var immutablePrefix string
+	var immutablePrefix arrayFlags
 	var graphiteAddress string
 	var graphitePort int
 	var statsAddress string
@@ -308,7 +325,7 @@ func main() {
 
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
-	flag.StringVar(&immutablePrefix, "immutablePrefix", "", "Do not add prefix to metrics start with")
+	flag.Var(&immutablePrefix, "immutablePrefix", "Do not add prefix to metrics start with. Could be set many times")
 	flag.StringVar(&graphiteAddress, "graphiteAddress", "", "Graphite server DNS name")
 	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server DNS name")
 	flag.StringVar(&statsAddress, "statsAddress", "127.0.0.1", "Proxy stats bind address")
