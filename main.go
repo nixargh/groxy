@@ -17,7 +17,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.6.0"
+var version string = "0.6.1"
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -28,20 +28,21 @@ type Metric struct {
 }
 
 type State struct {
-	In              int64 `json:"in"`
-	Out             int64 `json:"out"`
-	Transformed     int64 `json:"transformed"`
-	Bad             int64 `json:"bad"`
-	SendError       int64 `json:"send_error"`
-	InMpm           int64 `json:"in_mpm"`
-	OutMpm          int64 `json:"out_mpm"`
-	BadMpm          int64 `json:"bad_mpm"`
-	TransformedMpm  int64 `json:"transformed_mpm"`
-	Connection      int64 `json:"connection"`
-	ConnectionAlive int64 `json:"connection_alive"`
-	ConnectionError int64 `json:"connection_error"`
-	OutQueue        int64 `json:"out_queue"`
-	TransformQueue  int64 `json:"transform_queue"`
+	Version         string `json:"version"`
+	In              int64  `json:"in"`
+	Out             int64  `json:"out"`
+	Transformed     int64  `json:"transformed"`
+	Bad             int64  `json:"bad"`
+	SendError       int64  `json:"send_error"`
+	InMpm           int64  `json:"in_mpm"`
+	OutMpm          int64  `json:"out_mpm"`
+	BadMpm          int64  `json:"bad_mpm"`
+	TransformedMpm  int64  `json:"transformed_mpm"`
+	Connection      int64  `json:"connection"`
+	ConnectionAlive int64  `json:"connection_alive"`
+	ConnectionError int64  `json:"connection_error"`
+	OutQueue        int64  `json:"out_queue"`
+	TransformQueue  int64  `json:"transform_queue"`
 }
 
 var state State
@@ -174,6 +175,13 @@ func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metr
 
 	for i := 0; i < len(metrics); i++ {
 		if metrics[i] != emptyMetric {
+			// If connection is dead - just return metrics to outputChan
+			if connectionAlive == false {
+				outputChan <- metrics[i]
+				returned++
+				continue
+			}
+
 			metricString := fmt.Sprintf(
 				"%s%s %s %d %s",
 				metrics[i].Prefix,
@@ -183,27 +191,21 @@ func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metr
 				metrics[i].Tenant,
 			)
 
-			// If connection is dead - just return metrics to outputChan
-			if connectionAlive {
-				dataLength, err := connection.Write([]byte(metricString + "\n"))
-				if err != nil {
-					log.Printf("Connection write error: '%s'.", err)
-					state.SendError++
+			dataLength, err := connection.Write([]byte(metricString + "\n"))
+			if err != nil {
+				log.Printf("Connection write error: '%s'.", err)
+				state.SendError++
 
-					connectionAlive = false
+				connectionAlive = false
 
-					// Here we must return metric to ResendQueue
-					outputChan <- metrics[i]
-					returned++
-				} else {
-					log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metricString)
-					sent++
-					state.Out++
-					state.OutQueue--
-				}
-			} else {
+				// Here we must return metric to ResendQueue
 				outputChan <- metrics[i]
 				returned++
+			} else {
+				log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metricString)
+				sent++
+				state.Out++
+				state.OutQueue--
 			}
 		}
 	}
@@ -309,6 +311,7 @@ func (i *arrayFlags) Set(value string) error {
 func main() {
 	//	defer profile.Start().Stop()
 
+	state.Version = version
 	log.Printf("Groxy rocks! (v%s)\n", version)
 
 	var tenant string
