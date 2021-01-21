@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,9 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.6.1"
+var version string = "0.7.0"
+
+var cl *log.Entry
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -49,7 +52,7 @@ var state State
 
 func runRouter(address string, port int) {
 	netAddress := fmt.Sprintf("%s:%d", address, port)
-	log.Printf("Starting Stats server at: '%s'.\n", netAddress)
+	cl.Infof("Starting Stats server at: '%s'.\n", netAddress)
 
 	// Create HTTP router
 	router := mux.NewRouter()
@@ -311,9 +314,6 @@ func (i *arrayFlags) Set(value string) error {
 func main() {
 	//	defer profile.Start().Stop()
 
-	state.Version = version
-	log.Printf("Groxy rocks! (v%s)\n", version)
-
 	var tenant string
 	var prefix string
 	var immutablePrefix arrayFlags
@@ -325,6 +325,9 @@ func main() {
 	var port int
 	var TLS bool
 	var ignoreCert bool
+	var jsonLog bool
+	var debug bool
+	var logCaller bool
 
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
@@ -337,8 +340,40 @@ func main() {
 	flag.IntVar(&port, "port", 2003, "Proxy bind port")
 	flag.BoolVar(&TLS, "TLS", false, "Use TLS encrypted connection")
 	flag.BoolVar(&ignoreCert, "ignoreCert", false, "Do not verify Graphite server certificate")
+	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
+	flag.BoolVar(&debug, "debug", false, "Log debug messages")
+	flag.BoolVar(&logCaller, "logCaller", false, "Log message caller (file and line number)")
 
 	flag.Parse()
+
+	// Setup logging
+	log.SetOutput(os.Stdout)
+
+	if jsonLog == true {
+		log.SetFormatter(&log.JSONFormatter{})
+	} else {
+		log.SetFormatter(&log.TextFormatter{
+			//		FullTimestamp: true,
+		})
+	}
+
+	if debug == true {
+		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
+
+	log.SetReportCaller(logCaller)
+
+	thread := "main"
+	cl = log.WithFields(log.Fields{
+		"pid":     os.Getpid(),
+		"thread":  thread,
+		"version": version,
+	})
+
+	state.Version = version
+	cl.Info("Groxy rocks!")
 
 	inputChan := make(chan Metric, 10000000)
 	outputChan := make(chan Metric, 10000000)
@@ -348,14 +383,15 @@ func main() {
 	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert)
 	go runRouter(statsAddress, statsPort)
 
-	log.Println("Starting a waiting loop.")
+	sleepSeconds := 60
+	cl.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
 	for {
 		in := state.In
 		out := state.Out
 		transformed := state.Transformed
 		bad := state.Bad
 
-		time.Sleep(60 * time.Second)
+		time.Sleep(time.Duration(sleepSeconds) * time.Second)
 
 		// Calculate MPMs
 		state.InMpm = state.In - in
@@ -363,6 +399,6 @@ func main() {
 		state.TransformedMpm = state.Transformed - transformed
 		state.BadMpm = state.Bad - bad
 
-		log.Printf("State: %s.", state)
+		cl.WithFields(log.Fields{"state": state}).Info("Dumping state")
 	}
 }
