@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"bufio"
 	"crypto/tls"
 	"encoding/json"
@@ -9,7 +10,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +20,7 @@ import (
 
 var version string = "0.7.0"
 
-var cl *log.Entry
+var clog, slog, rlog, tlog, stlog *log.Entry
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -51,14 +51,19 @@ type State struct {
 var state State
 
 func runRouter(address string, port int) {
+	stlog = clog.WithFields(log.Fields{
+		"address": address,
+		"port": port,
+		"thread": "stats",
+	})
 	netAddress := fmt.Sprintf("%s:%d", address, port)
-	cl.Infof("Starting Stats server at: '%s'.\n", netAddress)
+	stlog.Info("Starting Stats server.")
 
 	// Create HTTP router
 	router := mux.NewRouter()
 	router.HandleFunc("/stats", getState).Methods("GET")
 
-	log.Fatal(http.ListenAndServe(netAddress, router))
+	stlog.Fatal(http.ListenAndServe(netAddress, router))
 }
 
 func getState(w http.ResponseWriter, req *http.Request) {
@@ -66,20 +71,25 @@ func getState(w http.ResponseWriter, req *http.Request) {
 }
 
 func runReceiver(address string, port int, inputChan chan Metric) {
+	rlog = clog.WithFields(log.Fields{
+		"address": address,
+		"port": port,
+		"thread": "receiver",
+	})
 	netAddress := fmt.Sprintf("%s:%d", address, port)
 
-	log.Printf("Starting Receiver at: '%s'.\n", netAddress)
+	rlog.Info("Starting Receiver.")
 
 	ln, err := net.Listen("tcp4", netAddress)
 	if err != nil {
-		log.Fatalf("Listener error: '%s'.", err)
+		rlog.WithFields(log.Fields{"error": err}).Fatal("Listener error.")
 	}
 	defer ln.Close()
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("Reader accept error: '%s'.", err)
+			rlog.WithFields(log.Fields{"error": err}).Fatal("Reader accept error.")
 			return
 		}
 		go readMetric(conn, inputChan)
@@ -93,7 +103,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 	for scanner.Scan() {
 		metricString := scanner.Text()
 
-		log.Printf("In: '%s'.", metricString)
+		rlog.WithFields(log.Fields{"metric": metricString}).Debug("Metric received.")
 		metricSlice := strings.Split(metricString, " ")
 
 		metric := Metric{}
@@ -104,7 +114,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		case 4:
 			metric.Tenant = metricSlice[3]
 		default:
-			log.Printf("Bad metric: '%s'.", metricString)
+			rlog.WithFields(log.Fields{"metric": metricString}).Error("Bad metric.")
 			state.Bad++
 			connection.Close()
 			return
@@ -112,7 +122,11 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 
 		timestamp, err := strconv.ParseInt(metricSlice[2], 10, 64)
 		if err != nil {
-			log.Printf("Timestamp error: '%s'.", err)
+			rlog.WithFields(log.Fields{
+				"metric": metricString,
+				"timestampString": metricSlice[2],
+				"error": err,
+			}).Error("Timestamp error.")
 			state.Bad++
 			return
 		}
@@ -127,20 +141,27 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		state.TransformQueue++
 	}
 	if err := scanner.Err(); err != nil {
-		log.Printf("Error reading input:", err)
+		rlog.WithFields(log.Fields{"error": err}).Error("Error reading input.")
 	}
 
 	connection.Close()
 }
 
 func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCert bool) {
-	log.Printf("Starting Sender to '%s:%d'.\n", host, port)
+	slog = clog.WithFields(log.Fields{
+		"host": host,
+		"port": port,
+		"thread": "sender",
+		"tls": TLS,
+		"ignoreCert": ignoreCert,
+	})
+	slog.Info("Starting Sender.")
 
 	for {
 		// Create output connection
 		connection, err := createConnection(host, port, TLS, ignoreCert)
 		if err != nil {
-			log.Printf("Can't create connection: '%s'.", err)
+			slog.WithFields(log.Fields{"error": err}).Fatal("Can't create connection.")
 			state.ConnectionError++
 			time.Sleep(5 * time.Second)
 			continue
@@ -353,8 +374,8 @@ func main() {
 		log.SetFormatter(&log.JSONFormatter{})
 	} else {
 		log.SetFormatter(&log.TextFormatter{
-			//		FullTimestamp: true,
-		})
+	//		FullTimestamp: true,
+	})
 	}
 
 	if debug == true {
@@ -365,15 +386,14 @@ func main() {
 
 	log.SetReportCaller(logCaller)
 
-	thread := "main"
-	cl = log.WithFields(log.Fields{
-		"pid":     os.Getpid(),
-		"thread":  thread,
+	clog = log.WithFields(log.Fields{
+		"pid": os.Getpid(),
+		"thread": "main",
 		"version": version,
 	})
 
 	state.Version = version
-	cl.Info("Groxy rocks!")
+	clog.Info("Groxy rocks!")
 
 	inputChan := make(chan Metric, 10000000)
 	outputChan := make(chan Metric, 10000000)
@@ -384,7 +404,7 @@ func main() {
 	go runRouter(statsAddress, statsPort)
 
 	sleepSeconds := 60
-	cl.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
+	clog.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
 	for {
 		in := state.In
 		out := state.Out
@@ -399,6 +419,6 @@ func main() {
 		state.TransformedMpm = state.Transformed - transformed
 		state.BadMpm = state.Bad - bad
 
-		cl.WithFields(log.Fields{"state": state}).Info("Dumping state")
+		clog.WithFields(log.Fields{"state": state}).Info("Dumping state")
 	}
 }
