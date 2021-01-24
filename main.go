@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,9 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.6.1"
+var version string = "0.7.0"
+
+var clog, slog, rlog, tlog, stlog *log.Entry
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -48,14 +51,19 @@ type State struct {
 var state State
 
 func runRouter(address string, port int) {
+	stlog = clog.WithFields(log.Fields{
+		"address": address,
+		"port":    port,
+		"thread":  "stats",
+	})
 	netAddress := fmt.Sprintf("%s:%d", address, port)
-	log.Printf("Starting Stats server at: '%s'.\n", netAddress)
+	stlog.Info("Starting Stats server.")
 
 	// Create HTTP router
 	router := mux.NewRouter()
 	router.HandleFunc("/stats", getState).Methods("GET")
 
-	log.Fatal(http.ListenAndServe(netAddress, router))
+	stlog.Fatal(http.ListenAndServe(netAddress, router))
 }
 
 func getState(w http.ResponseWriter, req *http.Request) {
@@ -63,20 +71,25 @@ func getState(w http.ResponseWriter, req *http.Request) {
 }
 
 func runReceiver(address string, port int, inputChan chan Metric) {
+	rlog = clog.WithFields(log.Fields{
+		"address": address,
+		"port":    port,
+		"thread":  "receiver",
+	})
 	netAddress := fmt.Sprintf("%s:%d", address, port)
 
-	log.Printf("Starting Receiver at: '%s'.\n", netAddress)
+	rlog.Info("Starting Receiver.")
 
 	ln, err := net.Listen("tcp4", netAddress)
 	if err != nil {
-		log.Fatalf("Listener error: '%s'.", err)
+		rlog.WithFields(log.Fields{"error": err}).Fatal("Listener error.")
 	}
 	defer ln.Close()
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("Reader accept error: '%s'.", err)
+			rlog.WithFields(log.Fields{"error": err}).Fatal("Reader accept error.")
 			return
 		}
 		go readMetric(conn, inputChan)
@@ -90,7 +103,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 	for scanner.Scan() {
 		metricString := scanner.Text()
 
-		log.Printf("In: '%s'.", metricString)
+		rlog.WithFields(log.Fields{"metric": metricString}).Debug("Metric received.")
 		metricSlice := strings.Split(metricString, " ")
 
 		metric := Metric{}
@@ -101,7 +114,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		case 4:
 			metric.Tenant = metricSlice[3]
 		default:
-			log.Printf("Bad metric: '%s'.", metricString)
+			rlog.WithFields(log.Fields{"metric": metricString}).Error("Bad metric.")
 			state.Bad++
 			connection.Close()
 			return
@@ -109,7 +122,11 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 
 		timestamp, err := strconv.ParseInt(metricSlice[2], 10, 64)
 		if err != nil {
-			log.Printf("Timestamp error: '%s'.", err)
+			rlog.WithFields(log.Fields{
+				"metric":          metricString,
+				"timestampString": metricSlice[2],
+				"error":           err,
+			}).Error("Timestamp error.")
 			state.Bad++
 			return
 		}
@@ -121,23 +138,29 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 
 		inputChan <- metric
 		state.In++
-		state.TransformQueue++
 	}
 	if err := scanner.Err(); err != nil {
-		log.Printf("Error reading input:", err)
+		rlog.WithFields(log.Fields{"error": err}).Error("Error reading input.")
 	}
 
 	connection.Close()
 }
 
 func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCert bool) {
-	log.Printf("Starting Sender to '%s:%d'.\n", host, port)
+	slog = clog.WithFields(log.Fields{
+		"host":       host,
+		"port":       port,
+		"thread":     "sender",
+		"tls":        TLS,
+		"ignoreCert": ignoreCert,
+	})
+	slog.Info("Starting Sender.")
 
 	for {
 		// Create output connection
 		connection, err := createConnection(host, port, TLS, ignoreCert)
 		if err != nil {
-			log.Printf("Can't create connection: '%s'.", err)
+			slog.WithFields(log.Fields{"error": err}).Fatal("Can't create connection.")
 			state.ConnectionError++
 			time.Sleep(5 * time.Second)
 			continue
@@ -193,7 +216,7 @@ func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metr
 
 			dataLength, err := connection.Write([]byte(metricString + "\n"))
 			if err != nil {
-				log.Printf("Connection write error: '%s'.", err)
+				slog.WithFields(log.Fields{"error": err}).Error("Connection write error.")
 				state.SendError++
 
 				connectionAlive = false
@@ -202,22 +225,28 @@ func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metr
 				outputChan <- metrics[i]
 				returned++
 			} else {
-				log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metricString)
+				slog.WithFields(log.Fields{
+					"bytes":  dataLength,
+					"metric": metricString,
+					"number": i,
+				}).Debug("Metric sent.")
 				sent++
 				state.Out++
-				state.OutQueue--
 			}
 		}
 	}
 
 	connection.Close()
 	state.ConnectionAlive--
-	log.Printf("The pack is finished: sent=%d; returned=%d.\n", sent, returned)
+	slog.WithFields(log.Fields{
+		"sent":     sent,
+		"returned": returned,
+	}).Info("The pack is finished.")
 }
 
-func createConnection(address string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
-	netAddress := fmt.Sprintf("%s:%d", address, port)
-	log.Printf("Connecting to: '%s'.\n", netAddress)
+func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
+	netAddress := fmt.Sprintf("%s:%d", host, port)
+	slog.Debug("Connecting to Graphite.")
 
 	timeout, _ := time.ParseDuration("10s")
 	dialer := &net.Dialer{Timeout: timeout}
@@ -241,12 +270,14 @@ func createConnection(address string, port int, TLS bool, ignoreCert bool) (net.
 		connection, err = dialer.Dial("tcp4", netAddress)
 	}
 	if err != nil {
-		log.Printf("Dialer error: '%s'.", err)
+		slog.WithFields(log.Fields{"error": err}).Error("Dialer error.")
 		return connection, err
 	}
 	connection.SetDeadline(time.Now().Add(600 * time.Second))
 
-	log.Printf("Connection remote address: '%s'.\n", connection.RemoteAddr())
+	slog.WithFields(log.Fields{
+		"remoteAddress": connection.RemoteAddr(),
+	}).Info("Connection to Graphite established.")
 	return connection, err
 }
 
@@ -256,7 +287,14 @@ func runTransformer(
 	tenant string,
 	prefix string,
 	immutablePrefix []string) {
-	log.Printf("Starting Transformer: tenant='%s', prefix='%s', immutablePrefix='%s'.\n", tenant, prefix, immutablePrefix)
+
+	tlog = clog.WithFields(log.Fields{
+		"thread":          "transformer",
+		"tenant":          tenant,
+		"prefix":          prefix,
+		"immutablePrefix": immutablePrefix,
+	})
+	tlog.Info("Starting Transformer.")
 
 	for {
 		select {
@@ -288,13 +326,11 @@ func transformMetric(
 		}
 	}
 
-	log.Printf("Transformed: '%s'.\n", metric)
+	tlog.WithFields(log.Fields{"metric": metric}).Debug("Metric transformed.")
 	outputChan <- metric
 
 	// Update state
 	state.Transformed++
-	state.TransformQueue--
-	state.OutQueue++
 }
 
 type arrayFlags []string
@@ -308,11 +344,18 @@ func (i *arrayFlags) Set(value string) error {
 	return nil
 }
 
+func updateQueue(sleepSeconds int) {
+	clog.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting queues update loop.")
+	for {
+		time.Sleep(time.Duration(sleepSeconds) * time.Second)
+
+		state.TransformQueue = state.In - state.Transformed
+		state.OutQueue = state.In - state.Out
+	}
+}
+
 func main() {
 	//	defer profile.Start().Stop()
-
-	state.Version = version
-	log.Printf("Groxy rocks! (v%s)\n", version)
 
 	var tenant string
 	var prefix string
@@ -325,6 +368,9 @@ func main() {
 	var port int
 	var TLS bool
 	var ignoreCert bool
+	var jsonLog bool
+	var debug bool
+	var logCaller bool
 
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
@@ -337,8 +383,44 @@ func main() {
 	flag.IntVar(&port, "port", 2003, "Proxy bind port")
 	flag.BoolVar(&TLS, "TLS", false, "Use TLS encrypted connection")
 	flag.BoolVar(&ignoreCert, "ignoreCert", false, "Do not verify Graphite server certificate")
+	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
+	flag.BoolVar(&debug, "debug", false, "Log debug messages")
+	flag.BoolVar(&logCaller, "logCaller", false, "Log message caller (file and line number)")
 
 	flag.Parse()
+
+	// Setup logging
+	log.SetOutput(os.Stdout)
+
+	if jsonLog == true {
+		log.SetFormatter(&log.JSONFormatter{})
+	} else {
+		log.SetFormatter(&log.TextFormatter{
+			//		FullTimestamp: true,
+		})
+	}
+
+	if debug == true {
+		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
+
+	log.SetReportCaller(logCaller)
+
+	clog = log.WithFields(log.Fields{
+		"pid":     os.Getpid(),
+		"thread":  "main",
+		"version": version,
+	})
+
+	state.Version = version
+	clog.Info("Groxy rocks!")
+
+	// Validate variables
+	if graphiteAddress == "" {
+		clog.Fatal("You must set '-graphiteAddress'.")
+	}
 
 	inputChan := make(chan Metric, 10000000)
 	outputChan := make(chan Metric, 10000000)
@@ -347,15 +429,17 @@ func main() {
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
 	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert)
 	go runRouter(statsAddress, statsPort)
+	go updateQueue(1)
 
-	log.Println("Starting a waiting loop.")
+	sleepSeconds := 60
+	clog.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
 	for {
 		in := state.In
 		out := state.Out
 		transformed := state.Transformed
 		bad := state.Bad
 
-		time.Sleep(60 * time.Second)
+		time.Sleep(time.Duration(sleepSeconds) * time.Second)
 
 		// Calculate MPMs
 		state.InMpm = state.In - in
@@ -363,6 +447,6 @@ func main() {
 		state.TransformedMpm = state.Transformed - transformed
 		state.BadMpm = state.Bad - bad
 
-		log.Printf("State: %s.", state)
+		clog.WithFields(log.Fields{"state": state}).Info("Dumping state.")
 	}
 }
