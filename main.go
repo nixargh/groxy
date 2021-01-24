@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"bufio"
 	"crypto/tls"
 	"encoding/json"
@@ -10,6 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -53,8 +53,8 @@ var state State
 func runRouter(address string, port int) {
 	stlog = clog.WithFields(log.Fields{
 		"address": address,
-		"port": port,
-		"thread": "stats",
+		"port":    port,
+		"thread":  "stats",
 	})
 	netAddress := fmt.Sprintf("%s:%d", address, port)
 	stlog.Info("Starting Stats server.")
@@ -73,8 +73,8 @@ func getState(w http.ResponseWriter, req *http.Request) {
 func runReceiver(address string, port int, inputChan chan Metric) {
 	rlog = clog.WithFields(log.Fields{
 		"address": address,
-		"port": port,
-		"thread": "receiver",
+		"port":    port,
+		"thread":  "receiver",
 	})
 	netAddress := fmt.Sprintf("%s:%d", address, port)
 
@@ -123,9 +123,9 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		timestamp, err := strconv.ParseInt(metricSlice[2], 10, 64)
 		if err != nil {
 			rlog.WithFields(log.Fields{
-				"metric": metricString,
+				"metric":          metricString,
 				"timestampString": metricSlice[2],
-				"error": err,
+				"error":           err,
 			}).Error("Timestamp error.")
 			state.Bad++
 			return
@@ -149,10 +149,10 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 
 func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCert bool) {
 	slog = clog.WithFields(log.Fields{
-		"host": host,
-		"port": port,
-		"thread": "sender",
-		"tls": TLS,
+		"host":       host,
+		"port":       port,
+		"thread":     "sender",
+		"tls":        TLS,
 		"ignoreCert": ignoreCert,
 	})
 	slog.Info("Starting Sender.")
@@ -217,7 +217,7 @@ func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metr
 
 			dataLength, err := connection.Write([]byte(metricString + "\n"))
 			if err != nil {
-				log.Printf("Connection write error: '%s'.", err)
+				slog.WithFields(log.Fields{"error": err}).Error("Connection write error.")
 				state.SendError++
 
 				connectionAlive = false
@@ -226,7 +226,11 @@ func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metr
 				outputChan <- metrics[i]
 				returned++
 			} else {
-				log.Printf("[%d] Out (%d bytes): '%s'.\n", i, dataLength, metricString)
+				slog.WithFields(log.Fields{
+					"bytes":  dataLength,
+					"metric": metricString,
+					"number": i,
+				}).Debug("Metric sent.")
 				sent++
 				state.Out++
 				state.OutQueue--
@@ -236,12 +240,15 @@ func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metr
 
 	connection.Close()
 	state.ConnectionAlive--
-	log.Printf("The pack is finished: sent=%d; returned=%d.\n", sent, returned)
+	slog.WithFields(log.Fields{
+		"sent":     sent,
+		"returned": returned,
+	}).Info("The pack is finished.")
 }
 
-func createConnection(address string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
-	netAddress := fmt.Sprintf("%s:%d", address, port)
-	log.Printf("Connecting to: '%s'.\n", netAddress)
+func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
+	netAddress := fmt.Sprintf("%s:%d", host, port)
+	slog.Debug("Connecting to Graphite.")
 
 	timeout, _ := time.ParseDuration("10s")
 	dialer := &net.Dialer{Timeout: timeout}
@@ -265,12 +272,14 @@ func createConnection(address string, port int, TLS bool, ignoreCert bool) (net.
 		connection, err = dialer.Dial("tcp4", netAddress)
 	}
 	if err != nil {
-		log.Printf("Dialer error: '%s'.", err)
+		slog.WithFields(log.Fields{"error": err}).Error("Dialer error.")
 		return connection, err
 	}
 	connection.SetDeadline(time.Now().Add(600 * time.Second))
 
-	log.Printf("Connection remote address: '%s'.\n", connection.RemoteAddr())
+	slog.WithFields(log.Fields{
+		"remoteAddress": connection.RemoteAddr(),
+	}).Info("Connection to Graphite established.")
 	return connection, err
 }
 
@@ -280,7 +289,14 @@ func runTransformer(
 	tenant string,
 	prefix string,
 	immutablePrefix []string) {
-	log.Printf("Starting Transformer: tenant='%s', prefix='%s', immutablePrefix='%s'.\n", tenant, prefix, immutablePrefix)
+
+	tlog = clog.WithFields(log.Fields{
+		"thread":          "transformer",
+		"tenant":          tenant,
+		"prefix":          prefix,
+		"immutablePrefix": immutablePrefix,
+	})
+	tlog.Info("Starting Transformer.")
 
 	for {
 		select {
@@ -312,7 +328,7 @@ func transformMetric(
 		}
 	}
 
-	log.Printf("Transformed: '%s'.\n", metric)
+	tlog.WithFields(log.Fields{"metric": metric}).Debug("Metric transformed.")
 	outputChan <- metric
 
 	// Update state
@@ -374,8 +390,8 @@ func main() {
 		log.SetFormatter(&log.JSONFormatter{})
 	} else {
 		log.SetFormatter(&log.TextFormatter{
-	//		FullTimestamp: true,
-	})
+			//		FullTimestamp: true,
+		})
 	}
 
 	if debug == true {
@@ -387,13 +403,18 @@ func main() {
 	log.SetReportCaller(logCaller)
 
 	clog = log.WithFields(log.Fields{
-		"pid": os.Getpid(),
-		"thread": "main",
+		"pid":     os.Getpid(),
+		"thread":  "main",
 		"version": version,
 	})
 
 	state.Version = version
 	clog.Info("Groxy rocks!")
+
+	// Validate variables
+	if graphiteAddress == "" {
+		clog.Fatal("You must set '-graphiteAddress'.")
+	}
 
 	inputChan := make(chan Metric, 10000000)
 	outputChan := make(chan Metric, 10000000)
