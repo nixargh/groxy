@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -18,9 +19,10 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.7.0"
+var version string = "0.8.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
+var hostname string
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -44,6 +46,7 @@ type State struct {
 	Connection      int64  `json:"connection"`
 	ConnectionAlive int64  `json:"connection_alive"`
 	ConnectionError int64  `json:"connection_error"`
+	Queue           int64  `json:"queue"`
 	OutQueue        int64  `json:"out_queue"`
 	TransformQueue  int64  `json:"transform_queue"`
 }
@@ -241,7 +244,7 @@ func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metr
 	slog.WithFields(log.Fields{
 		"sent":     sent,
 		"returned": returned,
-	}).Info("The pack is finished.")
+	}).Info("Pack is finished.")
 }
 
 func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
@@ -350,13 +353,62 @@ func updateQueue(sleepSeconds int) {
 		time.Sleep(time.Duration(sleepSeconds) * time.Second)
 
 		state.TransformQueue = state.In - state.Transformed
-		state.OutQueue = state.In - state.Out
+		state.OutQueue = state.Transformed - state.Out
+		state.Queue = state.In - state.Out
+	}
+}
+
+func getHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		clog.WithFields(log.Fields{"error": err}).Fatal("Can't get hostname.")
+	}
+
+	hostnameSplit := strings.Split(hostname, ".")
+	hostname = hostnameSplit[0]
+	clog.WithFields(log.Fields{"hostname": hostname}).Info("Got hostname.")
+	return hostname
+}
+
+func sendStateMetrics(instance string, inputChan chan Metric) {
+	clog.Info("Sending state metrics.")
+	stateSnapshot := state
+	timestamp := time.Now().Unix()
+
+	value := reflect.ValueOf(stateSnapshot)
+	for i := 0; i < value.NumField(); i++ {
+		structfield := value.Type().Field(i)
+		name := structfield.Name
+		value := value.Field(i)
+		tag := structfield.Tag.Get("json")
+
+		metric := Metric{}
+
+		if name == "Version" {
+			metric.Value = strings.Replace(value.String(), ".", "", 2)
+		} else {
+			metric.Value = fmt.Sprintf("%d", value.Int())
+		}
+
+		clog.WithFields(log.Fields{
+			"name":  name,
+			"tag":   tag,
+			"value": metric.Value,
+		}).Debug("State field.")
+
+		metric.Path = fmt.Sprintf("%s.groxy.%s.state.%s", hostname, instance, tag)
+		metric.Timestamp = timestamp
+
+		// Pass to transformation
+		inputChan <- metric
+		state.In++
 	}
 }
 
 func main() {
 	//	defer profile.Start().Stop()
 
+	var instance string
 	var tenant string
 	var prefix string
 	var immutablePrefix arrayFlags
@@ -372,6 +424,7 @@ func main() {
 	var debug bool
 	var logCaller bool
 
+	flag.StringVar(&instance, "instance", "default", "Groxy instance name (for log and metrics)")
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
 	flag.Var(&immutablePrefix, "immutablePrefix", "Do not add prefix to metrics start with. Could be set many times")
@@ -409,9 +462,10 @@ func main() {
 	log.SetReportCaller(logCaller)
 
 	clog = log.WithFields(log.Fields{
-		"pid":     os.Getpid(),
-		"thread":  "main",
-		"version": version,
+		"instance": instance,
+		"pid":      os.Getpid(),
+		"thread":   "main",
+		"version":  version,
 	})
 
 	state.Version = version
@@ -424,6 +478,8 @@ func main() {
 
 	inputChan := make(chan Metric, 10000000)
 	outputChan := make(chan Metric, 10000000)
+
+	hostname = getHostname()
 
 	go runReceiver(address, port, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
@@ -448,5 +504,7 @@ func main() {
 		state.BadMpm = state.Bad - bad
 
 		clog.WithFields(log.Fields{"state": state}).Info("Dumping state.")
+
+		sendStateMetrics(instance, inputChan)
 	}
 }
