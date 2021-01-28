@@ -34,21 +34,21 @@ type Metric struct {
 
 type State struct {
 	Version         string `json:"version"`
-	In              int64  `json:"in"`
-	Out             int64  `json:"out"`
-	Transformed     int64  `json:"transformed"`
-	Bad             int64  `json:"bad"`
-	SendError       int64  `json:"send_error"`
-	InMpm           int64  `json:"in_mpm"`
-	OutMpm          int64  `json:"out_mpm"`
-	BadMpm          int64  `json:"bad_mpm"`
-	TransformedMpm  int64  `json:"transformed_mpm"`
-	Connection      int64  `json:"connection"`
-	ConnectionAlive int64  `json:"connection_alive"`
-	ConnectionError int64  `json:"connection_error"`
-	Queue           int64  `json:"queue"`
-	OutQueue        int64  `json:"out_queue"`
-	TransformQueue  int64  `json:"transform_queue"`
+	In              uint64 `json:"in"`
+	Out             uint64 `json:"out"`
+	Transformed     uint64 `json:"transformed"`
+	Bad             uint64 `json:"bad"`
+	SendError       uint64 `json:"send_error"`
+	InMpm           uint64 `json:"in_mpm"`
+	OutMpm          uint64 `json:"out_mpm"`
+	BadMpm          uint64 `json:"bad_mpm"`
+	TransformedMpm  uint64 `json:"transformed_mpm"`
+	Connection      uint64 `json:"connection"`
+	ConnectionAlive uint64 `json:"connection_alive"`
+	ConnectionError uint64 `json:"connection_error"`
+	Queue           uint64 `json:"queue"`
+	OutQueue        uint64 `json:"out_queue"`
+	TransformQueue  uint64 `json:"transform_queue"`
 }
 
 var state State
@@ -387,7 +387,7 @@ func sendStateMetrics(instance string, inputChan chan Metric) {
 		if name == "Version" {
 			metric.Value = strings.Replace(value.String(), ".", "", 2)
 		} else {
-			metric.Value = fmt.Sprintf("%d", value.Int())
+			metric.Value = fmt.Sprintf("%d", value.Uint())
 		}
 
 		clog.WithFields(log.Fields{
