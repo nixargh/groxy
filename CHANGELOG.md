@@ -4,7 +4,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
-## [0.8.1]
+## [0.9.0] - 2021-02-09
+### Changed
+- Replace **uint64** with **int64** for state counters.
+- Refactor **sendMetric**.
+
+### Fixed
+- [#1](https://github.com/nixargh/groxy/issues/1) use **sync/atomic** for counters.
+
+## [0.8.1] - 2021-01-28
 ### Changed
 - Replace **int64** with **uint64** for state counters.
 
