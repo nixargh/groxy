@@ -52,6 +52,7 @@ type State struct {
 	OutQueue           int64  `json:"out_queue"`
 	Queue              int64  `json:"queue"`
 	NegativeQueueError int64  `json:"negative_queue_error"`
+	PacksOverflewError int64  `json:"packs_overflew_error"`
 }
 
 var state State
@@ -211,7 +212,8 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 				limitPerSec--
 			}
 		} else {
-			slog.Warning("Limit of metrics per second overflown.")
+			slog.Warning("Limit of metric packs per second overflew.")
+			atomic.AddInt64(&state.PacksOverflewError, 1)
 			time.Sleep(1 * time.Second)
 		}
 	}
@@ -472,7 +474,7 @@ func main() {
 	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
 	flag.BoolVar(&debug, "debug", false, "Log debug messages")
 	flag.BoolVar(&logCaller, "logCaller", false, "Log message caller (file and line number)")
-	flag.IntVar(&limitPerSec, "limitPerSec", 10, "Maximum number of metric packs (1000 metrics) sent per second")
+	flag.IntVar(&limitPerSec, "limitPerSec", 10, "Maximum number of metric packs (<=1000 metrics per pack) sent per second")
 
 	flag.Parse()
 
