@@ -20,7 +20,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "0.9.0"
+var version string = "1.0.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 var hostname string
@@ -52,8 +52,10 @@ type State struct {
 	OutQueue           int64  `json:"out_queue"`
 	Queue              int64  `json:"queue"`
 	NegativeQueueError int64  `json:"negative_queue_error"`
+	PacksOverflewError int64  `json:"packs_overflew_error"`
 }
 
+var emptyMetric *Metric
 var state State
 
 func runRouter(address string, port int) {
@@ -76,7 +78,7 @@ func getState(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(state)
 }
 
-func runReceiver(address string, port int, inputChan chan Metric) {
+func runReceiver(address string, port int, inputChan chan *Metric) {
 	rlog = clog.WithFields(log.Fields{
 		"address": address,
 		"port":    port,
@@ -102,7 +104,7 @@ func runReceiver(address string, port int, inputChan chan Metric) {
 	}
 }
 
-func readMetric(connection net.Conn, inputChan chan Metric) {
+func readMetric(connection net.Conn, inputChan chan *Metric) {
 	connection.SetReadDeadline(time.Now().Add(600 * time.Second))
 
 	scanner := bufio.NewScanner(connection)
@@ -142,7 +144,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		metric.Value = metricSlice[1]
 		metric.Timestamp = timestamp
 
-		inputChan <- metric
+		inputChan <- &metric
 		atomic.AddInt64(&state.In, 1)
 	}
 	if err := scanner.Err(); err != nil {
@@ -153,7 +155,17 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 	connection.Close()
 }
 
-func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCert bool) {
+func limitRefresher(limitPerSec *int) {
+	savedLimit := *limitPerSec
+	slog.WithFields(log.Fields{"limitPerSec": savedLimit}).Info("Starting Packs Limit Refresher.")
+
+	for {
+		time.Sleep(1 * time.Second)
+		*limitPerSec = savedLimit
+	}
+}
+
+func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreCert bool, limitPerSec int) {
 	slog = clog.WithFields(log.Fields{
 		"host":       host,
 		"port":       port,
@@ -163,45 +175,55 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 	})
 	slog.Info("Starting Sender.")
 
+	// Start limit refresher thread
+	go limitRefresher(&limitPerSec)
+
 	for {
-		// Create output connection
-		connection, err := createConnection(host, port, TLS, ignoreCert)
-		if err != nil {
-			slog.WithFields(log.Fields{"error": err}).Fatal("Can't create connection.")
-			atomic.AddInt64(&state.ConnectionError, 1)
-			time.Sleep(5 * time.Second)
-			continue
-		} else {
-			atomic.AddInt64(&state.Connection, 1)
-			atomic.AddInt64(&state.ConnectionAlive, 1)
-		}
-
-		// collect a pack of metrics
-		var metrics [1000]Metric
-
-		for i := 0; i < len(metrics); i++ {
-			select {
-			case metric := <-outputChan:
-				metrics[i] = metric
-			default:
-				metrics[i] = Metric{}
-				time.Sleep(100 * time.Millisecond)
+		curLimit := limitPerSec
+		slog.WithFields(log.Fields{"limit": curLimit}).Debug("Current limit.")
+		if curLimit > 0 {
+			// Create output connection
+			connection, err := createConnection(host, port, TLS, ignoreCert)
+			if err != nil {
+				slog.WithFields(log.Fields{"error": err}).Fatal("Can't create connection.")
+				atomic.AddInt64(&state.ConnectionError, 1)
+				time.Sleep(5 * time.Second)
+				continue
+			} else {
+				atomic.AddInt64(&state.Connection, 1)
+				atomic.AddInt64(&state.ConnectionAlive, 1)
 			}
-		}
 
-		// send the pack
-		if len(metrics) > 0 {
-			go sendMetric(&metrics, connection, outputChan)
+			// collect a pack of metrics
+			var metrics [1000]*Metric
+
+			for i := 0; i < len(metrics); i++ {
+				select {
+				case metric := <-outputChan:
+					metrics[i] = metric
+				default:
+					metrics[i] = emptyMetric
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
+
+			// send the pack
+			if len(metrics) > 0 {
+				go sendMetric(&metrics, connection, outputChan)
+				limitPerSec--
+			}
+		} else {
+			slog.Warning("Limit of metric packs per second overflew.")
+			atomic.AddInt64(&state.PacksOverflewError, 1)
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
-func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metric) {
+func sendMetric(metrics *[1000]*Metric, connection net.Conn, outputChan chan *Metric) {
 	sent := 0
 	returned := 0
 	connectionAlive := true
-
-	emptyMetric := Metric{}
 
 	for i := 0; i < len(metrics); i++ {
 		if metrics[i] == emptyMetric {
@@ -291,8 +313,8 @@ func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Con
 }
 
 func runTransformer(
-	inputChan chan Metric,
-	outputChan chan Metric,
+	inputChan chan *Metric,
+	outputChan chan *Metric,
 	tenant string,
 	prefix string,
 	immutablePrefix []string) {
@@ -316,8 +338,8 @@ func runTransformer(
 }
 
 func transformMetric(
-	metric Metric,
-	outputChan chan Metric,
+	metric *Metric,
+	outputChan chan *Metric,
 	tenant string,
 	prefix string,
 	immutablePrefix []string) {
@@ -381,7 +403,7 @@ func getHostname() string {
 	return hostname
 }
 
-func sendStateMetrics(instance string, inputChan chan Metric) {
+func sendStateMetrics(instance string, inputChan chan *Metric) {
 	clog.Info("Sending state metrics.")
 	stateSnapshot := state
 	timestamp := time.Now().Unix()
@@ -411,7 +433,7 @@ func sendStateMetrics(instance string, inputChan chan Metric) {
 		metric.Timestamp = timestamp
 
 		// Pass to transformation
-		inputChan <- metric
+		inputChan <- &metric
 		atomic.AddInt64(&state.In, 1)
 	}
 }
@@ -434,6 +456,7 @@ func main() {
 	var jsonLog bool
 	var debug bool
 	var logCaller bool
+	var limitPerSec int
 
 	flag.StringVar(&instance, "instance", "default", "Groxy instance name (for log and metrics)")
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
@@ -450,6 +473,7 @@ func main() {
 	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
 	flag.BoolVar(&debug, "debug", false, "Log debug messages")
 	flag.BoolVar(&logCaller, "logCaller", false, "Log message caller (file and line number)")
+	flag.IntVar(&limitPerSec, "limitPerSec", 10, "Maximum number of metric packs (<=1000 metrics per pack) sent per second")
 
 	flag.Parse()
 
@@ -487,14 +511,14 @@ func main() {
 		clog.Fatal("You must set '-graphiteAddress'.")
 	}
 
-	inputChan := make(chan Metric, 10000000)
-	outputChan := make(chan Metric, 10000000)
+	inputChan := make(chan *Metric, 10000000)
+	outputChan := make(chan *Metric, 10000000)
 
 	hostname = getHostname()
 
 	go runReceiver(address, port, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert)
+	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert, limitPerSec)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
 

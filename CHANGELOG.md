@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2021-02-17
+### Added
+- **limitPerSec** new argument to limit the number of metric packs sent per second. Default is 10 packs that is equals to 10x1000=10000 metrics per second or 600000 mpm.
+- New metric **PacksOverflewError** exported as **packs_overflew_error**.
+
+### Changed
+- Send pointers to *Metric* through chanels instead of *Metric* itself. Reduce memory consumption (~6-10 times).
+
 ## [0.9.0] - 2021-02-09
 ### Changed
 - Replace **uint64** with **int64** for state counters.
