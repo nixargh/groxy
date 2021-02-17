@@ -55,6 +55,7 @@ type State struct {
 	PacksOverflewError int64  `json:"packs_overflew_error"`
 }
 
+var emptyMetric *Metric
 var state State
 
 func runRouter(address string, port int) {
@@ -77,7 +78,7 @@ func getState(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(state)
 }
 
-func runReceiver(address string, port int, inputChan chan Metric) {
+func runReceiver(address string, port int, inputChan chan *Metric) {
 	rlog = clog.WithFields(log.Fields{
 		"address": address,
 		"port":    port,
@@ -103,7 +104,7 @@ func runReceiver(address string, port int, inputChan chan Metric) {
 	}
 }
 
-func readMetric(connection net.Conn, inputChan chan Metric) {
+func readMetric(connection net.Conn, inputChan chan *Metric) {
 	connection.SetReadDeadline(time.Now().Add(600 * time.Second))
 
 	scanner := bufio.NewScanner(connection)
@@ -143,7 +144,7 @@ func readMetric(connection net.Conn, inputChan chan Metric) {
 		metric.Value = metricSlice[1]
 		metric.Timestamp = timestamp
 
-		inputChan <- metric
+		inputChan <- &metric
 		atomic.AddInt64(&state.In, 1)
 	}
 	if err := scanner.Err(); err != nil {
@@ -164,7 +165,7 @@ func limitRefresher(limitPerSec *int) {
 	}
 }
 
-func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCert bool, limitPerSec int) {
+func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreCert bool, limitPerSec int) {
 	slog = clog.WithFields(log.Fields{
 		"host":       host,
 		"port":       port,
@@ -194,14 +195,14 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 			}
 
 			// collect a pack of metrics
-			var metrics [1000]Metric
+			var metrics [1000]*Metric
 
 			for i := 0; i < len(metrics); i++ {
 				select {
 				case metric := <-outputChan:
 					metrics[i] = metric
 				default:
-					metrics[i] = Metric{}
+					metrics[i] = emptyMetric
 					time.Sleep(100 * time.Millisecond)
 				}
 			}
@@ -219,12 +220,10 @@ func runSender(host string, port int, outputChan chan Metric, TLS bool, ignoreCe
 	}
 }
 
-func sendMetric(metrics *[1000]Metric, connection net.Conn, outputChan chan Metric) {
+func sendMetric(metrics *[1000]*Metric, connection net.Conn, outputChan chan *Metric) {
 	sent := 0
 	returned := 0
 	connectionAlive := true
-
-	emptyMetric := Metric{}
 
 	for i := 0; i < len(metrics); i++ {
 		if metrics[i] == emptyMetric {
@@ -314,8 +313,8 @@ func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Con
 }
 
 func runTransformer(
-	inputChan chan Metric,
-	outputChan chan Metric,
+	inputChan chan *Metric,
+	outputChan chan *Metric,
 	tenant string,
 	prefix string,
 	immutablePrefix []string) {
@@ -339,8 +338,8 @@ func runTransformer(
 }
 
 func transformMetric(
-	metric Metric,
-	outputChan chan Metric,
+	metric *Metric,
+	outputChan chan *Metric,
 	tenant string,
 	prefix string,
 	immutablePrefix []string) {
@@ -404,7 +403,7 @@ func getHostname() string {
 	return hostname
 }
 
-func sendStateMetrics(instance string, inputChan chan Metric) {
+func sendStateMetrics(instance string, inputChan chan *Metric) {
 	clog.Info("Sending state metrics.")
 	stateSnapshot := state
 	timestamp := time.Now().Unix()
@@ -434,7 +433,7 @@ func sendStateMetrics(instance string, inputChan chan Metric) {
 		metric.Timestamp = timestamp
 
 		// Pass to transformation
-		inputChan <- metric
+		inputChan <- &metric
 		atomic.AddInt64(&state.In, 1)
 	}
 }
@@ -512,8 +511,8 @@ func main() {
 		clog.Fatal("You must set '-graphiteAddress'.")
 	}
 
-	inputChan := make(chan Metric, 10000000)
-	outputChan := make(chan Metric, 10000000)
+	inputChan := make(chan *Metric, 10000000)
+	outputChan := make(chan *Metric, 10000000)
 
 	hostname = getHostname()
 
