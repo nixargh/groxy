@@ -20,7 +20,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "1.0.0"
+var version string = "1.1.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 var hostname string
@@ -343,9 +343,13 @@ func transformMetric(
 	tenant string,
 	prefix string,
 	immutablePrefix []string) {
-	metric.Tenant = tenant
 
-	if prefix != "" {
+	// Set tenant only if it is empty
+	if metric.Tenant == "" {
+		metric.Tenant = tenant
+	}
+
+	if metric.Prefix == "" && prefix != "" {
 		mutate := true
 		for i := range immutablePrefix {
 			if strings.HasPrefix(metric.Path, immutablePrefix[i]) == true {
@@ -403,7 +407,7 @@ func getHostname() string {
 	return hostname
 }
 
-func sendStateMetrics(instance string, inputChan chan *Metric) {
+func sendStateMetrics(instance string, systemTenant string, systemPrefix string, inputChan chan *Metric) {
 	clog.Info("Sending state metrics.")
 	stateSnapshot := state
 	timestamp := time.Now().Unix()
@@ -431,6 +435,8 @@ func sendStateMetrics(instance string, inputChan chan *Metric) {
 
 		metric.Path = fmt.Sprintf("%s.groxy.%s.state.%s", hostname, instance, tag)
 		metric.Timestamp = timestamp
+		metric.Tenant = systemTenant
+		metric.Prefix = systemPrefix + "."
 
 		// Pass to transformation
 		inputChan <- &metric
@@ -457,6 +463,8 @@ func main() {
 	var debug bool
 	var logCaller bool
 	var limitPerSec int
+	var systemTenant string
+	var systemPrefix string
 
 	flag.StringVar(&instance, "instance", "default", "Groxy instance name (for log and metrics)")
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
@@ -474,6 +482,8 @@ func main() {
 	flag.BoolVar(&debug, "debug", false, "Log debug messages")
 	flag.BoolVar(&logCaller, "logCaller", false, "Log message caller (file and line number)")
 	flag.IntVar(&limitPerSec, "limitPerSec", 10, "Maximum number of metric packs (<=1000 metrics per pack) sent per second")
+	flag.StringVar(&systemTenant, "systemTenant", "", "Graphite project name to store SELF metrics in. By default is equal to 'tennant'")
+	flag.StringVar(&systemPrefix, "systemPrefix", "", "Prefix to add to any SELF metric. By default is equal to 'prefix'")
 
 	flag.Parse()
 
@@ -511,6 +521,14 @@ func main() {
 		clog.Fatal("You must set '-graphiteAddress'.")
 	}
 
+	if systemTenant == "" {
+		systemTenant = tenant
+	}
+
+	if systemPrefix == "" {
+		systemPrefix = prefix
+	}
+
 	inputChan := make(chan *Metric, 10000000)
 	outputChan := make(chan *Metric, 10000000)
 
@@ -540,6 +558,6 @@ func main() {
 
 		clog.WithFields(log.Fields{"state": state}).Info("Dumping state.")
 
-		sendStateMetrics(instance, inputChan)
+		sendStateMetrics(instance, systemTenant, systemPrefix, inputChan)
 	}
 }

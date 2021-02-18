@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2021-02-18
+### Changed
+- Do not rewrite **tenant** if it is set.
+
+### Added
+- **systemTenant** and **systemPrefix** arguments to allow sending groxy metrix to some tenant and path different from main **tenant** and **path**.
+
 ## [1.0.0] - 2021-02-17
 ### Added
 - **limitPerSec** new argument to limit the number of metric packs sent per second. Default is 10 packs that is equals to 10x1000=10000 metrics per second or 600000 mpm.
