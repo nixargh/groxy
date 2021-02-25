@@ -185,7 +185,7 @@ func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreC
 			// Create output connection
 			connection, err := createConnection(host, port, TLS, ignoreCert)
 			if err != nil {
-				slog.WithFields(log.Fields{"error": err}).Fatal("Can't create connection.")
+				slog.WithFields(log.Fields{"error": err}).Error("Can't create connection.")
 				atomic.AddInt64(&state.ConnectionError, 1)
 				time.Sleep(5 * time.Second)
 				continue
