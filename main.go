@@ -20,7 +20,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "1.1.0"
+var version string = "1.1.2"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 var hostname string
