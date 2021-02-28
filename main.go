@@ -20,7 +20,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "1.2.0"
+var version string = "1.2.1"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 var hostname string
@@ -203,7 +203,7 @@ func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreC
 					metrics[i] = metric
 				default:
 					metrics[i] = emptyMetric
-					time.Sleep(10 * time.Millisecond)
+					time.Sleep(5 * time.Millisecond)
 				}
 			}
 
