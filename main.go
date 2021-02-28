@@ -20,7 +20,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "1.1.2"
+var version string = "1.2.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 var hostname string
@@ -195,7 +195,7 @@ func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreC
 			}
 
 			// collect a pack of metrics
-			var metrics [1000]*Metric
+			var metrics [10000]*Metric
 
 			for i := 0; i < len(metrics); i++ {
 				select {
@@ -203,7 +203,7 @@ func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreC
 					metrics[i] = metric
 				default:
 					metrics[i] = emptyMetric
-					time.Sleep(100 * time.Millisecond)
+					time.Sleep(10 * time.Millisecond)
 				}
 			}
 
@@ -220,7 +220,7 @@ func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreC
 	}
 }
 
-func sendMetric(metrics *[1000]*Metric, connection net.Conn, outputChan chan *Metric) {
+func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *Metric) {
 	sent := 0
 	returned := 0
 	connectionAlive := true
@@ -481,7 +481,7 @@ func main() {
 	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
 	flag.BoolVar(&debug, "debug", false, "Log debug messages")
 	flag.BoolVar(&logCaller, "logCaller", false, "Log message caller (file and line number)")
-	flag.IntVar(&limitPerSec, "limitPerSec", 10, "Maximum number of metric packs (<=1000 metrics per pack) sent per second")
+	flag.IntVar(&limitPerSec, "limitPerSec", 2, "Maximum number of metric packs (<=10000 metrics per pack) sent per second")
 	flag.StringVar(&systemTenant, "systemTenant", "", "Graphite project name to store SELF metrics in. By default is equal to 'tennant'")
 	flag.StringVar(&systemPrefix, "systemPrefix", "", "Prefix to add to any SELF metric. By default is equal to 'prefix'")
 
