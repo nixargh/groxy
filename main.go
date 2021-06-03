@@ -20,7 +20,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "1.2.1"
+var version string = "1.3.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 var hostname string
@@ -484,6 +484,7 @@ func main() {
 	flag.IntVar(&limitPerSec, "limitPerSec", 2, "Maximum number of metric packs (<=10000 metrics per pack) sent per second")
 	flag.StringVar(&systemTenant, "systemTenant", "", "Graphite project name to store SELF metrics in. By default is equal to 'tennant'")
 	flag.StringVar(&systemPrefix, "systemPrefix", "", "Prefix to add to any SELF metric. By default is equal to 'prefix'")
+	flag.StringVar(&hostname, "hostname", "", "Hostname of a computer running Groxy")
 
 	flag.Parse()
 
@@ -529,10 +530,12 @@ func main() {
 		systemPrefix = prefix
 	}
 
+	if hostname == "" {
+		hostname = getHostname()
+	}
+
 	inputChan := make(chan *Metric, 10000000)
 	outputChan := make(chan *Metric, 10000000)
-
-	hostname = getHostname()
 
 	go runReceiver(address, port, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
