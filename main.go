@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/zlib"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -20,7 +22,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "1.3.0"
+var version string = "1.4.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 var hostname string
@@ -165,7 +167,14 @@ func limitRefresher(limitPerSec *int) {
 	}
 }
 
-func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreCert bool, limitPerSec int) {
+func runSender(
+	host string,
+	port int,
+	outputChan chan *Metric,
+	TLS bool,
+	ignoreCert bool,
+	limitPerSec int,
+	compress bool) {
 	slog = clog.WithFields(log.Fields{
 		"host":       host,
 		"port":       port,
@@ -209,7 +218,7 @@ func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreC
 
 			// send the pack
 			if len(metrics) > 0 {
-				go sendMetric(&metrics, connection, outputChan)
+				go sendMetric(&metrics, connection, outputChan, compress)
 				limitPerSec--
 			}
 		} else {
@@ -220,7 +229,7 @@ func runSender(host string, port int, outputChan chan *Metric, TLS bool, ignoreC
 	}
 }
 
-func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *Metric) {
+func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *Metric, compress bool) {
 	sent := 0
 	returned := 0
 	connectionAlive := true
@@ -238,7 +247,7 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 		}
 
 		metricString := fmt.Sprintf(
-			"%s%s %s %d %s",
+			"%s%s %s %d %s\n",
 			metrics[i].Prefix,
 			metrics[i].Path,
 			metrics[i].Value,
@@ -246,7 +255,16 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 			metrics[i].Tenant,
 		)
 
-		dataLength, err := connection.Write([]byte(metricString + "\n"))
+		var buf bytes.Buffer
+		if compress == true {
+			w := zlib.NewWriter(&buf)
+			w.Write([]byte(metricString))
+			w.Close()
+		} else {
+			buf.Write([]byte(metricString))
+		}
+
+		dataLength, err := buf.WriteTo(connection)
 		if err != nil {
 			slog.WithFields(log.Fields{"error": err}).Error("Connection write error.")
 			atomic.AddInt64(&state.SendError, 1)
@@ -465,13 +483,14 @@ func main() {
 	var limitPerSec int
 	var systemTenant string
 	var systemPrefix string
+	var compressSend bool
 
 	flag.StringVar(&instance, "instance", "default", "Groxy instance name (for log and metrics)")
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
 	flag.Var(&immutablePrefix, "immutablePrefix", "Do not add prefix to metrics start with. Could be set many times")
 	flag.StringVar(&graphiteAddress, "graphiteAddress", "", "Graphite server DNS name")
-	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server DNS name")
+	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server TCP port")
 	flag.StringVar(&statsAddress, "statsAddress", "127.0.0.1", "Proxy stats bind address")
 	flag.IntVar(&statsPort, "statsPort", 3003, "Proxy stats port")
 	flag.StringVar(&address, "address", "127.0.0.1", "Proxy bind address")
@@ -481,8 +500,9 @@ func main() {
 	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
 	flag.BoolVar(&debug, "debug", false, "Log debug messages")
 	flag.BoolVar(&logCaller, "logCaller", false, "Log message caller (file and line number)")
+	flag.BoolVar(&compressSend, "compressSend", false, "Compress messages when sending")
 	flag.IntVar(&limitPerSec, "limitPerSec", 2, "Maximum number of metric packs (<=10000 metrics per pack) sent per second")
-	flag.StringVar(&systemTenant, "systemTenant", "", "Graphite project name to store SELF metrics in. By default is equal to 'tennant'")
+	flag.StringVar(&systemTenant, "systemTenant", "", "Graphite project name to store SELF metrics in. By default is equal to 'tenant'")
 	flag.StringVar(&systemPrefix, "systemPrefix", "", "Prefix to add to any SELF metric. By default is equal to 'prefix'")
 	flag.StringVar(&hostname, "hostname", "", "Hostname of a computer running Groxy")
 
@@ -539,7 +559,7 @@ func main() {
 
 	go runReceiver(address, port, inputChan)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert, limitPerSec)
+	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert, limitPerSec, compressSend)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
 
