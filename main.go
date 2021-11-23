@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	log "github.com/sirupsen/logrus"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -80,11 +81,12 @@ func getState(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(state)
 }
 
-func runReceiver(address string, port int, inputChan chan *Metric) {
+func runReceiver(address string, port int, inputChan chan *Metric, compress bool) {
 	rlog = clog.WithFields(log.Fields{
-		"address": address,
-		"port":    port,
-		"thread":  "receiver",
+		"address":  address,
+		"port":     port,
+		"compress": compress,
+		"thread":   "receiver",
 	})
 	netAddress := fmt.Sprintf("%s:%d", address, port)
 
@@ -102,14 +104,25 @@ func runReceiver(address string, port int, inputChan chan *Metric) {
 			rlog.WithFields(log.Fields{"error": err}).Fatal("Reader accept error.")
 			return
 		}
-		go readMetric(conn, inputChan)
+		go readMetric(conn, inputChan, compress)
 	}
 }
 
-func readMetric(connection net.Conn, inputChan chan *Metric) {
+func readMetric(connection net.Conn, inputChan chan *Metric, compress bool) {
 	connection.SetReadDeadline(time.Now().Add(600 * time.Second))
+	var uncompressedConn io.ReadCloser
+	var err error
 
-	scanner := bufio.NewScanner(connection)
+	if compress == true {
+		uncompressedConn, err = zlib.NewReader(connection)
+		if err != nil {
+			rlog.WithFields(log.Fields{"error": err}).Fatal("Decompression error.")
+		}
+	} else {
+		uncompressedConn = connection
+	}
+
+	scanner := bufio.NewScanner(uncompressedConn)
 	for scanner.Scan() {
 		metricString := scanner.Text()
 
@@ -154,7 +167,7 @@ func readMetric(connection net.Conn, inputChan chan *Metric) {
 		atomic.AddInt64(&state.ReadError, 1)
 	}
 
-	connection.Close()
+	uncompressedConn.Close()
 }
 
 func limitRefresher(limitPerSec *int) {
@@ -180,6 +193,7 @@ func runSender(
 		"port":       port,
 		"thread":     "sender",
 		"tls":        TLS,
+		"compress":   compress,
 		"ignoreCert": ignoreCert,
 	})
 	slog.Info("Starting Sender.")
@@ -230,9 +244,14 @@ func runSender(
 }
 
 func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *Metric, compress bool) {
+	buffered := 0
 	sent := 0
 	returned := 0
 	connectionAlive := true
+	var buf bytes.Buffer
+	compressedBuf := zlib.NewWriter(&buf)
+	var dataLength int
+	var err error
 
 	for i := 0; i < len(metrics); i++ {
 		if metrics[i] == emptyMetric {
@@ -255,34 +274,45 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 			metrics[i].Tenant,
 		)
 
-		var buf bytes.Buffer
 		if compress == true {
-			w := zlib.NewWriter(&buf)
-			w.Write([]byte(metricString))
-			w.Close()
+			dataLength, err = compressedBuf.Write([]byte(metricString))
+			if err != nil {
+				slog.WithFields(log.Fields{"error": err}).Error("Compression buffer write error.")
+			} else {
+				buffered++
+			}
 		} else {
-			buf.Write([]byte(metricString))
-		}
-
-		dataLength, err := buf.WriteTo(connection)
-		if err != nil {
-			slog.WithFields(log.Fields{"error": err}).Error("Connection write error.")
-			atomic.AddInt64(&state.SendError, 1)
-
-			connectionAlive = false
-
-			// Here we must return metric to out outputChan
-			outputChan <- metrics[i]
-			returned++
-		} else {
+			dataLength, err = buf.Write([]byte(metricString))
 			slog.WithFields(log.Fields{
 				"bytes":  dataLength,
 				"metric": metricString,
 				"number": i,
-			}).Debug("Metric sent.")
-			sent++
-			atomic.AddInt64(&state.Out, 1)
+			}).Debug("Metric buffered.")
+			buffered++
 		}
+	}
+
+	compressedBuf.Close()
+
+	// Now the time to dump all buffer into connection
+	packDataLength, err := buf.WriteTo(connection)
+
+	if err != nil {
+		slog.WithFields(log.Fields{"error": err}).Error("Connection write error.")
+		atomic.AddInt64(&state.SendError, 1)
+
+		connectionAlive = false
+
+		// Here we must return metric to out outputChan
+		// FIXME outputChan <- metric[i]
+		returned += buffered
+	} else {
+		slog.WithFields(log.Fields{
+			"bytes":  packDataLength,
+			"number": buffered,
+		}).Debug("Metrics pack sent.")
+		sent += buffered
+		atomic.AddInt64(&state.Out, int64(buffered))
 	}
 
 	connection.Close()
@@ -291,6 +321,17 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 		"sent":     sent,
 		"returned": returned,
 	}).Info("Pack is finished.")
+}
+
+func compressMetricString(buf *bytes.Buffer, metricString *string) {
+	w := zlib.NewWriter(buf)
+
+	_, err := w.Write([]byte(*metricString))
+	if err != nil {
+		slog.WithFields(log.Fields{"error": err}).Error("Compression buffer write error.")
+	}
+
+	w.Close()
 }
 
 func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
@@ -318,15 +359,17 @@ func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Con
 	} else {
 		connection, err = dialer.Dial("tcp4", netAddress)
 	}
+
 	if err != nil {
 		slog.WithFields(log.Fields{"error": err}).Error("Dialer error.")
-		return connection, err
-	}
-	connection.SetDeadline(time.Now().Add(600 * time.Second))
+	} else {
+		connection.SetDeadline(time.Now().Add(600 * time.Second))
 
-	slog.WithFields(log.Fields{
-		"remoteAddress": connection.RemoteAddr(),
-	}).Info("Connection to Graphite established.")
+		slog.WithFields(log.Fields{
+			"remoteAddress": connection.RemoteAddr(),
+		}).Info("Connection to Graphite established.")
+	}
+
 	return connection, err
 }
 
@@ -483,7 +526,8 @@ func main() {
 	var limitPerSec int
 	var systemTenant string
 	var systemPrefix string
-	var compressSend bool
+	var compressedOutput bool
+	var compressedInput bool
 
 	flag.StringVar(&instance, "instance", "default", "Groxy instance name (for log and metrics)")
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
@@ -500,7 +544,8 @@ func main() {
 	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
 	flag.BoolVar(&debug, "debug", false, "Log debug messages")
 	flag.BoolVar(&logCaller, "logCaller", false, "Log message caller (file and line number)")
-	flag.BoolVar(&compressSend, "compressSend", false, "Compress messages when sending")
+	flag.BoolVar(&compressedOutput, "compressedOutput", false, "Compress messages when sending")
+	flag.BoolVar(&compressedInput, "compressedInput", false, "Read compressed messages when receiving")
 	flag.IntVar(&limitPerSec, "limitPerSec", 2, "Maximum number of metric packs (<=10000 metrics per pack) sent per second")
 	flag.StringVar(&systemTenant, "systemTenant", "", "Graphite project name to store SELF metrics in. By default is equal to 'tenant'")
 	flag.StringVar(&systemPrefix, "systemPrefix", "", "Prefix to add to any SELF metric. By default is equal to 'prefix'")
@@ -557,9 +602,9 @@ func main() {
 	inputChan := make(chan *Metric, 10000000)
 	outputChan := make(chan *Metric, 10000000)
 
-	go runReceiver(address, port, inputChan)
+	go runReceiver(address, port, inputChan, compressedInput)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert, limitPerSec, compressSend)
+	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert, limitPerSec, compressedOutput)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
 
