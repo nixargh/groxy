@@ -318,20 +318,10 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 	connection.Close()
 	atomic.AddInt64(&state.ConnectionAlive, -1)
 	slog.WithFields(log.Fields{
-		"sent":     sent,
-		"returned": returned,
+		"sent_bytes": packDataLength,
+		"sent_num":   sent,
+		"returned":   returned,
 	}).Info("Pack is finished.")
-}
-
-func compressMetricString(buf *bytes.Buffer, metricString *string) {
-	w := zlib.NewWriter(buf)
-
-	_, err := w.Write([]byte(*metricString))
-	if err != nil {
-		slog.WithFields(log.Fields{"error": err}).Error("Compression buffer write error.")
-	}
-
-	w.Close()
 }
 
 func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
