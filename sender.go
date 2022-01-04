@@ -33,10 +33,10 @@ func runSender(
 	slog = clog.WithFields(log.Fields{
 		"host":       host,
 		"port":       port,
-		"thread":     "sender",
 		"tls":        TLS,
-		"compress":   compress,
 		"ignoreCert": ignoreCert,
+		"compress":   compress,
+		"thread":     "sender",
 	})
 	slog.Info("Starting Sender.")
 
@@ -146,14 +146,22 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 		connectionAlive = false
 
 		// Here we must return metric to out outputChan
-		// FIXME outputChan <- metric[i]
-		returned += buffered
+		for i := 0; i < len(metrics); i++ {
+			if metrics[i] == emptyMetric {
+				continue
+			}
+
+			outputChan <- metrics[i]
+			returned += 1
+		}
 	} else {
 		slog.WithFields(log.Fields{
 			"bytes":  packDataLength,
 			"number": buffered,
 		}).Debug("Metrics pack sent.")
+
 		sent += buffered
+
 		atomic.AddInt64(&state.OutBytes, int64(packDataLength))
 		atomic.AddInt64(&state.Out, int64(buffered))
 	}
@@ -161,9 +169,9 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 	connection.Close()
 	atomic.AddInt64(&state.ConnectionAlive, -1)
 	slog.WithFields(log.Fields{
-		"sent_bytes": packDataLength,
-		"sent_num":   sent,
-		"returned":   returned,
+		"sent_bytes":   packDataLength,
+		"sent_num":     sent,
+		"returned_num": returned,
 	}).Info("Pack is finished.")
 }
 

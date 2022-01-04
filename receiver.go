@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"compress/zlib"
+	"crypto/tls"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"io"
@@ -14,25 +15,60 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-func runReceiver(address string, port int, inputChan chan *Metric, compress bool) {
+func runReceiver(
+	address string,
+	port int,
+	inputChan chan *Metric,
+	TLS bool,
+	tlsCert string,
+	tlsKey string,
+	ignoreCert bool,
+	compress bool) {
 	rlog = clog.WithFields(log.Fields{
-		"address":  address,
-		"port":     port,
-		"compress": compress,
-		"thread":   "receiver",
+		"address":    address,
+		"port":       port,
+		"tls":        TLS,
+		"ignoreCert": ignoreCert,
+		"compress":   compress,
+		"thread":     "receiver",
 	})
 	netAddress := fmt.Sprintf("%s:%d", address, port)
 
 	rlog.Info("Starting Receiver.")
 
-	ln, err := net.Listen("tcp4", netAddress)
-	if err != nil {
-		rlog.WithFields(log.Fields{"error": err}).Fatal("Listener error.")
+	var listener net.Listener
+	var err error
+
+	if TLS {
+		// pass
+		certs, err := tls.LoadX509KeyPair(tlsCert, tlsKey)
+		if err != nil {
+			rlog.WithFields(log.Fields{"error": err}).Fatal("TLS Listener certificates error.")
+		}
+
+		config := &tls.Config{
+			Certificates:                []tls.Certificate{certs},
+			InsecureSkipVerify:          ignoreCert,
+			MinVersion:                  tls.VersionTLS12,
+			MaxVersion:                  tls.VersionTLS12,
+			DynamicRecordSizingDisabled: false,
+		}
+
+		listener, err = tls.Listen("tcp4", netAddress, config)
+		if err != nil {
+			rlog.WithFields(log.Fields{"error": err}).Fatal("TLS Listener error.")
+		}
+	} else {
+		listener, err = net.Listen("tcp4", netAddress)
+		if err != nil {
+			rlog.WithFields(log.Fields{"error": err}).Fatal("Listener error.")
+		}
 	}
-	defer ln.Close()
+
+	defer listener.Close()
 
 	for {
-		conn, err := ln.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			rlog.WithFields(log.Fields{"error": err}).Fatal("Reader connection acception error.")
 		}

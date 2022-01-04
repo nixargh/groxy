@@ -1,6 +1,15 @@
 # groxy
 Graphite Proxy in Golang
 
+## Features
+- TLS for output connection.
+- Add configurable tenant.
+- Add configurable prefix.
+- Don't add prefix to metrics start with configurable strings.
+- Send and receive metrics with **zlib** compression.
+- Publish its own metrics by HTTP.
+- Send its own metics to configurable tenant and prefix.
+
 ## Build
 `go get -d`
 

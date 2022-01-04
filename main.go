@@ -10,7 +10,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "1.4.0"
+var version string = "2.0.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 
@@ -61,7 +61,10 @@ func main() {
 	var statsPort int
 	var address string
 	var port int
-	var TLS bool
+	var tlsOutput bool
+	var tlsInput bool
+	var tlsInputCert string
+	var tlsInputKey string
 	var ignoreCert bool
 	var jsonLog bool
 	var debug bool
@@ -83,7 +86,10 @@ func main() {
 	flag.IntVar(&statsPort, "statsPort", 3003, "Proxy stats port")
 	flag.StringVar(&address, "address", "127.0.0.1", "Proxy bind address")
 	flag.IntVar(&port, "port", 2003, "Proxy bind port")
-	flag.BoolVar(&TLS, "TLS", false, "Use TLS encrypted connection")
+	flag.BoolVar(&tlsOutput, "tlsOutput", false, "Send metrics via TLS encrypted connection")
+	flag.BoolVar(&tlsInput, "tlsInput", false, "Receive metrics via TLS encrypted connection")
+	flag.StringVar(&tlsInputCert, "tlsInputCert", "groxy.crt", "TLS certificate for receiver")
+	flag.StringVar(&tlsInputKey, "tlsInputKey", "groxy.key", "TLS key for receiver")
 	flag.BoolVar(&ignoreCert, "ignoreCert", false, "Do not verify Graphite server certificate")
 	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
 	flag.BoolVar(&debug, "debug", false, "Log debug messages")
@@ -146,9 +152,9 @@ func main() {
 	inputChan := make(chan *Metric, 10000000)
 	outputChan := make(chan *Metric, 10000000)
 
-	go runReceiver(address, port, inputChan, compressedInput)
+	go runReceiver(address, port, inputChan, tlsInput, tlsInputCert, tlsInputKey, ignoreCert, compressedInput)
 	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	go runSender(graphiteAddress, graphitePort, outputChan, TLS, ignoreCert, limitPerSec, compressedOutput)
+	go runSender(graphiteAddress, graphitePort, outputChan, tlsOutput, ignoreCert, limitPerSec, compressedOutput)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
 
