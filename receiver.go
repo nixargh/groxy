@@ -34,8 +34,7 @@ func runReceiver(address string, port int, inputChan chan *Metric, compress bool
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			rlog.WithFields(log.Fields{"error": err}).Fatal("Reader accept error.")
-			return
+			rlog.WithFields(log.Fields{"error": err}).Fatal("Reader connection acception error.")
 		}
 		go readMetric(conn, inputChan, compress)
 	}
@@ -49,7 +48,9 @@ func readMetric(connection net.Conn, inputChan chan *Metric, compress bool) {
 	if compress == true {
 		uncompressedConn, err = zlib.NewReader(connection)
 		if err != nil {
-			rlog.WithFields(log.Fields{"error": err}).Fatal("Decompression error.")
+			rlog.WithFields(log.Fields{"error": err}).Error("Decompression error.")
+			atomic.AddInt64(&state.ReadError, 1)
+			return
 		}
 	} else {
 		uncompressedConn = connection

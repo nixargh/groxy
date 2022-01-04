@@ -154,6 +154,7 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 			"number": buffered,
 		}).Debug("Metrics pack sent.")
 		sent += buffered
+		atomic.AddInt64(&state.OutBytes, int64(packDataLength))
 		atomic.AddInt64(&state.Out, int64(buffered))
 	}
 

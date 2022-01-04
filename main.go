@@ -13,7 +13,6 @@ import (
 var version string = "1.4.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
-var hostname string
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -21,28 +20,6 @@ type Metric struct {
 	Value     string `json:"value,omitempty"`
 	Timestamp int64  `json:"timestamp,omitempty"`
 	Tenant    string `json:"tenant,omitempty"`
-}
-
-type State struct {
-	Version            string `json:"version"`
-	In                 int64  `json:"in"`
-	Bad                int64  `json:"bad"`
-	Transformed        int64  `json:"transformed"`
-	Out                int64  `json:"out"`
-	ReadError          int64  `json:"read_error"`
-	SendError          int64  `json:"send_error"`
-	InMpm              int64  `json:"in_mpm"`
-	BadMpm             int64  `json:"bad_mpm"`
-	TransformedMpm     int64  `json:"transformed_mpm"`
-	OutMpm             int64  `json:"out_mpm"`
-	Connection         int64  `json:"connection"`
-	ConnectionAlive    int64  `json:"connection_alive"`
-	ConnectionError    int64  `json:"connection_error"`
-	TransformQueue     int64  `json:"transform_queue"`
-	OutQueue           int64  `json:"out_queue"`
-	Queue              int64  `json:"queue"`
-	NegativeQueueError int64  `json:"negative_queue_error"`
-	PacksOverflewError int64  `json:"packs_overflew_error"`
 }
 
 var emptyMetric *Metric
@@ -92,6 +69,7 @@ func main() {
 	var limitPerSec int
 	var systemTenant string
 	var systemPrefix string
+	var hostname string
 	var compressedOutput bool
 	var compressedInput bool
 
@@ -181,6 +159,7 @@ func main() {
 		out := atomic.LoadInt64(&state.Out)
 		transformed := atomic.LoadInt64(&state.Transformed)
 		bad := atomic.LoadInt64(&state.Bad)
+		out_bytes := atomic.LoadInt64(&state.OutBytes)
 
 		time.Sleep(time.Duration(sleepSeconds) * time.Second)
 
@@ -189,9 +168,10 @@ func main() {
 		state.OutMpm = atomic.LoadInt64(&state.Out) - out
 		state.TransformedMpm = atomic.LoadInt64(&state.Transformed) - transformed
 		state.BadMpm = atomic.LoadInt64(&state.Bad) - bad
+		state.OutBpm = atomic.LoadInt64(&state.OutBytes) - out_bytes
 
 		clog.WithFields(log.Fields{"state": state}).Info("Dumping state.")
 
-		sendStateMetrics(instance, systemTenant, systemPrefix, inputChan)
+		sendStateMetrics(instance, hostname, systemTenant, systemPrefix, inputChan)
 	}
 }

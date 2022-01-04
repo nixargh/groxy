@@ -14,6 +14,30 @@ import (
 	//	"github.com/pkg/profile"
 )
 
+type State struct {
+	Version            string `json:"version"`
+	In                 int64  `json:"in"`
+	Bad                int64  `json:"bad"`
+	Transformed        int64  `json:"transformed"`
+	Out                int64  `json:"out"`
+	OutBytes           int64  `json:"out_bytes"`
+	ReadError          int64  `json:"read_error"`
+	SendError          int64  `json:"send_error"`
+	InMpm              int64  `json:"in_mpm"`
+	BadMpm             int64  `json:"bad_mpm"`
+	TransformedMpm     int64  `json:"transformed_mpm"`
+	OutMpm             int64  `json:"out_mpm"`
+	OutBpm             int64  `json:"out_bpm"`
+	Connection         int64  `json:"connection"`
+	ConnectionAlive    int64  `json:"connection_alive"`
+	ConnectionError    int64  `json:"connection_error"`
+	TransformQueue     int64  `json:"transform_queue"`
+	OutQueue           int64  `json:"out_queue"`
+	Queue              int64  `json:"queue"`
+	NegativeQueueError int64  `json:"negative_queue_error"`
+	PacksOverflewError int64  `json:"packs_overflew_error"`
+}
+
 func runRouter(address string, port int) {
 	stlog = clog.WithFields(log.Fields{
 		"address": address,
@@ -50,7 +74,7 @@ func updateQueue(sleepSeconds int) {
 	}
 }
 
-func sendStateMetrics(instance string, systemTenant string, systemPrefix string, inputChan chan *Metric) {
+func sendStateMetrics(instance string, hostname string, systemTenant string, systemPrefix string, inputChan chan *Metric) {
 	clog.Info("Sending state metrics.")
 	stateSnapshot := state
 	timestamp := time.Now().Unix()
@@ -79,7 +103,11 @@ func sendStateMetrics(instance string, systemTenant string, systemPrefix string,
 		metric.Path = fmt.Sprintf("%s.groxy.%s.state.%s", hostname, instance, tag)
 		metric.Timestamp = timestamp
 		metric.Tenant = systemTenant
-		metric.Prefix = systemPrefix + "."
+		metric.Prefix = systemPrefix
+
+		if metric.Prefix != "" {
+			metric.Prefix = metric.Prefix + "."
+		}
 
 		// Pass to transformation
 		inputChan <- &metric
