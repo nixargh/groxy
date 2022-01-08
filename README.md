@@ -2,7 +2,7 @@
 Graphite Proxy in Golang
 
 ## Features
-- TLS for output connection.
+- TLS for input & output connections.
 - Add configurable tenant.
 - Add configurable prefix.
 - Don't add prefix to metrics start with configurable strings.
