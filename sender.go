@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	log "github.com/sirupsen/logrus"
+	"io/ioutil"
 	"net"
 	"sync/atomic"
 	"time"
@@ -27,6 +29,10 @@ func runSender(
 	port int,
 	outputChan chan *Metric,
 	TLS bool,
+	mutualTLS bool,
+	tlsCaCert string,
+	tlsCert string,
+	tlsKey string,
 	ignoreCert bool,
 	limitPerSec int,
 	compress bool) {
@@ -34,6 +40,7 @@ func runSender(
 		"host":       host,
 		"port":       port,
 		"tls":        TLS,
+		"mutualTLS":  mutualTLS,
 		"ignoreCert": ignoreCert,
 		"compress":   compress,
 		"thread":     "sender",
@@ -48,7 +55,15 @@ func runSender(
 		slog.WithFields(log.Fields{"limit": curLimit}).Debug("Current limit.")
 		if curLimit > 0 {
 			// Create output connection
-			connection, err := createConnection(host, port, TLS, ignoreCert)
+			connection, err := createConnection(
+				host,
+				port,
+				TLS,
+				mutualTLS,
+				tlsCaCert,
+				tlsCert,
+				tlsKey,
+				ignoreCert)
 			if err != nil {
 				slog.WithFields(log.Fields{"error": err}).Error("Can't create connection.")
 				atomic.AddInt64(&state.ConnectionError, 1)
@@ -85,6 +100,75 @@ func runSender(
 	}
 }
 
+func createConnection(
+	host string,
+	port int,
+	TLS bool,
+	mutualTLS bool,
+	tlsCaCert string,
+	tlsCert string,
+	tlsKey string,
+	ignoreCert bool) (net.Conn, error) {
+	netAddress := fmt.Sprintf("%s:%d", host, port)
+	slog.Debug("Connecting to Graphite.")
+
+	timeout, _ := time.ParseDuration("10s")
+	dialer := &net.Dialer{Timeout: timeout}
+
+	var connection net.Conn
+	var err error
+
+	if TLS || mutualTLS {
+		var config *tls.Config
+
+		if mutualTLS {
+			caCert, err := ioutil.ReadFile(tlsCaCert)
+			if err != nil {
+				rlog.WithFields(log.Fields{"error": err}).Fatal("TLS Sender CA certificate error.")
+			}
+
+			certs, err := tls.LoadX509KeyPair(tlsCert, tlsKey)
+			if err != nil {
+				rlog.WithFields(log.Fields{"error": err}).Fatal("TLS Sender client certificates error.")
+			}
+
+			caCertPool := x509.NewCertPool()
+			caCertPool.AppendCertsFromPEM(caCert)
+
+			config = &tls.Config{
+				RootCAs:                     caCertPool,
+				Certificates:                []tls.Certificate{certs},
+				MinVersion:                  tls.VersionTLS12,
+				MaxVersion:                  tls.VersionTLS12,
+				DynamicRecordSizingDisabled: false,
+			}
+		} else {
+			config = &tls.Config{
+				InsecureSkipVerify:          ignoreCert,
+				MinVersion:                  tls.VersionTLS12,
+				MaxVersion:                  tls.VersionTLS12,
+				DynamicRecordSizingDisabled: false,
+			}
+		}
+
+		connection, err = tls.DialWithDialer(dialer, "tcp4", netAddress, config)
+	} else {
+		connection, err = dialer.Dial("tcp4", netAddress)
+	}
+
+	if err != nil {
+		slog.WithFields(log.Fields{"error": err}).Error("Dialer error.")
+	} else {
+		connection.SetDeadline(time.Now().Add(600 * time.Second))
+
+		slog.WithFields(log.Fields{
+			"remoteAddress": connection.RemoteAddr(),
+		}).Info("Connection to Graphite established.")
+	}
+
+	return connection, err
+}
+
 func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *Metric, compress bool) {
 	buffered := 0
 	sent := 0
@@ -107,14 +191,25 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 			continue
 		}
 
-		metricString := fmt.Sprintf(
-			"%s%s %s %d %s\n",
-			metrics[i].Prefix,
-			metrics[i].Path,
-			metrics[i].Value,
-			metrics[i].Timestamp,
-			metrics[i].Tenant,
-		)
+		var metricString string
+		if metrics[i].Tenant == "" {
+			metricString = fmt.Sprintf(
+				"%s%s %s %d\n",
+				metrics[i].Prefix,
+				metrics[i].Path,
+				metrics[i].Value,
+				metrics[i].Timestamp,
+			)
+		} else {
+			metricString = fmt.Sprintf(
+				"%s%s %s %d %s\n",
+				metrics[i].Prefix,
+				metrics[i].Path,
+				metrics[i].Value,
+				metrics[i].Timestamp,
+				metrics[i].Tenant,
+			)
+		}
 
 		if compress == true {
 			dataLength, err = compressedBuf.Write([]byte(metricString))
@@ -173,43 +268,4 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 		"sent_num":     sent,
 		"returned_num": returned,
 	}).Info("Pack is finished.")
-}
-
-func createConnection(host string, port int, TLS bool, ignoreCert bool) (net.Conn, error) {
-	netAddress := fmt.Sprintf("%s:%d", host, port)
-	slog.Debug("Connecting to Graphite.")
-
-	timeout, _ := time.ParseDuration("10s")
-	dialer := &net.Dialer{Timeout: timeout}
-
-	var connection net.Conn
-	var err error
-
-	if TLS {
-		connection, err = tls.DialWithDialer(
-			dialer,
-			"tcp4",
-			netAddress,
-			&tls.Config{
-				InsecureSkipVerify:          ignoreCert,
-				MinVersion:                  tls.VersionTLS12,
-				MaxVersion:                  tls.VersionTLS12,
-				DynamicRecordSizingDisabled: false,
-			},
-		)
-	} else {
-		connection, err = dialer.Dial("tcp4", netAddress)
-	}
-
-	if err != nil {
-		slog.WithFields(log.Fields{"error": err}).Error("Dialer error.")
-	} else {
-		connection.SetDeadline(time.Now().Add(600 * time.Second))
-
-		slog.WithFields(log.Fields{
-			"remoteAddress": connection.RemoteAddr(),
-		}).Info("Connection to Graphite established.")
-	}
-
-	return connection, err
 }

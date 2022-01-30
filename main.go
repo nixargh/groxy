@@ -10,7 +10,7 @@ import (
 	//	"github.com/pkg/profile"
 )
 
-var version string = "2.0.1"
+var version string = "2.1.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 
@@ -53,6 +53,7 @@ func main() {
 
 	var instance string
 	var tenant string
+	var forceTenant bool
 	var prefix string
 	var immutablePrefix arrayFlags
 	var graphiteAddress string
@@ -63,8 +64,14 @@ func main() {
 	var port int
 	var tlsOutput bool
 	var tlsInput bool
+	var mtlsOutput bool
+	var mtlsInput bool
+	var tlsInputCaCert string
 	var tlsInputCert string
 	var tlsInputKey string
+	var tlsOutputCaCert string
+	var tlsOutputCert string
+	var tlsOutputKey string
 	var ignoreCert bool
 	var jsonLog bool
 	var debug bool
@@ -78,6 +85,7 @@ func main() {
 
 	flag.StringVar(&instance, "instance", "default", "Groxy instance name (for log and metrics)")
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
+	flag.BoolVar(&forceTenant, "forceTenant", false, "Overwrite metrics tenant even if it is already set")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
 	flag.Var(&immutablePrefix, "immutablePrefix", "Do not add prefix to metrics start with. Could be set many times")
 	flag.StringVar(&graphiteAddress, "graphiteAddress", "", "Graphite server DNS name")
@@ -88,8 +96,14 @@ func main() {
 	flag.IntVar(&port, "port", 2003, "Proxy bind port")
 	flag.BoolVar(&tlsOutput, "tlsOutput", false, "Send metrics via TLS encrypted connection")
 	flag.BoolVar(&tlsInput, "tlsInput", false, "Receive metrics via TLS encrypted connection")
+	flag.BoolVar(&mtlsOutput, "mtlsOutput", false, "Send metrics via mutual TLS encrypted connection")
+	flag.BoolVar(&mtlsInput, "mtlsInput", false, "Receive metrics via mutual TLS encrypted connection")
+	flag.StringVar(&tlsInputCaCert, "tlsInputCaCert", "ca.crt", "TLS CA certificate for receiver")
 	flag.StringVar(&tlsInputCert, "tlsInputCert", "groxy.crt", "TLS certificate for receiver")
 	flag.StringVar(&tlsInputKey, "tlsInputKey", "groxy.key", "TLS key for receiver")
+	flag.StringVar(&tlsOutputCaCert, "tlsOutputCaCert", "ca.crt", "TLS CA certificate for sender")
+	flag.StringVar(&tlsOutputCert, "tlsOutputCert", "groxy.crt", "TLS certificate for sender")
+	flag.StringVar(&tlsOutputKey, "tlsOutputKey", "groxy.key", "TLS key for sender")
 	flag.BoolVar(&ignoreCert, "ignoreCert", false, "Do not verify Graphite server certificate")
 	flag.BoolVar(&jsonLog, "jsonLog", false, "Log in JSON format")
 	flag.BoolVar(&debug, "debug", false, "Log debug messages")
@@ -152,9 +166,32 @@ func main() {
 	inputChan := make(chan *Metric, 10000000)
 	outputChan := make(chan *Metric, 10000000)
 
-	go runReceiver(address, port, inputChan, tlsInput, tlsInputCert, tlsInputKey, ignoreCert, compressedInput)
-	go runTransformer(inputChan, outputChan, tenant, prefix, immutablePrefix)
-	go runSender(graphiteAddress, graphitePort, outputChan, tlsOutput, ignoreCert, limitPerSec, compressedOutput)
+	go runReceiver(
+		address,
+		port,
+		inputChan,
+		tlsInput,
+		mtlsInput,
+		tlsInputCaCert,
+		tlsInputCert,
+		tlsInputKey,
+		ignoreCert,
+		compressedInput)
+
+	go runSender(
+		graphiteAddress,
+		graphitePort,
+		outputChan,
+		tlsOutput,
+		mtlsOutput,
+		tlsOutputCaCert,
+		tlsOutputCert,
+		tlsOutputKey,
+		ignoreCert,
+		limitPerSec,
+		compressedOutput)
+
+	go runTransformer(inputChan, outputChan, tenant, forceTenant, prefix, immutablePrefix)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
 

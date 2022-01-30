@@ -12,6 +12,7 @@ func runTransformer(
 	inputChan chan *Metric,
 	outputChan chan *Metric,
 	tenant string,
+	forceTenant bool,
 	prefix string,
 	immutablePrefix []string) {
 
@@ -26,7 +27,7 @@ func runTransformer(
 	for {
 		select {
 		case metric := <-inputChan:
-			go transformMetric(metric, outputChan, tenant, prefix, immutablePrefix)
+			go transformMetric(metric, outputChan, tenant, forceTenant, prefix, immutablePrefix)
 		default:
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -37,12 +38,17 @@ func transformMetric(
 	metric *Metric,
 	outputChan chan *Metric,
 	tenant string,
+	forceTenant bool,
 	prefix string,
 	immutablePrefix []string) {
 
 	// Set tenant only if it is empty
-	if metric.Tenant == "" {
+	if forceTenant == true {
 		metric.Tenant = tenant
+	} else {
+		if metric.Tenant == "" {
+			metric.Tenant = tenant
+		}
 	}
 
 	if metric.Prefix == "" && prefix != "" {

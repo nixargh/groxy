@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"compress/zlib"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"io"
+	"io/ioutil"
 	"net"
 	"strconv"
 	"strings"
@@ -20,6 +22,8 @@ func runReceiver(
 	port int,
 	inputChan chan *Metric,
 	TLS bool,
+	mutualTLS bool,
+	tlsCaCert string,
 	tlsCert string,
 	tlsKey string,
 	ignoreCert bool,
@@ -28,6 +32,7 @@ func runReceiver(
 		"address":    address,
 		"port":       port,
 		"tls":        TLS,
+		"mutualTLS":  mutualTLS,
 		"ignoreCert": ignoreCert,
 		"compress":   compress,
 		"thread":     "receiver",
@@ -39,19 +44,41 @@ func runReceiver(
 	var listener net.Listener
 	var err error
 
-	if TLS {
-		// pass
+	if TLS || mutualTLS {
 		certs, err := tls.LoadX509KeyPair(tlsCert, tlsKey)
 		if err != nil {
-			rlog.WithFields(log.Fields{"error": err}).Fatal("TLS Listener certificates error.")
+			rlog.WithFields(log.Fields{"error": err}).Fatal("TLS Listener server certificates error.")
 		}
 
-		config := &tls.Config{
-			Certificates:                []tls.Certificate{certs},
-			InsecureSkipVerify:          ignoreCert,
-			MinVersion:                  tls.VersionTLS12,
-			MaxVersion:                  tls.VersionTLS12,
-			DynamicRecordSizingDisabled: false,
+		var config *tls.Config
+
+		if mutualTLS {
+			caCert, err := ioutil.ReadFile(tlsCaCert)
+			if err != nil {
+				rlog.WithFields(log.Fields{"error": err}).Fatal("TLS Listener CA certificate error.")
+			}
+
+			caCertPool := x509.NewCertPool()
+			caCertPool.AppendCertsFromPEM(caCert)
+
+			config = &tls.Config{
+				ClientCAs:                   caCertPool,
+				ClientAuth:                  tls.RequireAndVerifyClientCert,
+				Certificates:                []tls.Certificate{certs},
+				MinVersion:                  tls.VersionTLS12,
+				MaxVersion:                  tls.VersionTLS12,
+				DynamicRecordSizingDisabled: false,
+				PreferServerCipherSuites:    true,
+			}
+		} else {
+			config = &tls.Config{
+				Certificates:                []tls.Certificate{certs},
+				InsecureSkipVerify:          ignoreCert,
+				MinVersion:                  tls.VersionTLS12,
+				MaxVersion:                  tls.VersionTLS12,
+				DynamicRecordSizingDisabled: false,
+				PreferServerCipherSuites:    true,
+			}
 		}
 
 		listener, err = tls.Listen("tcp4", netAddress, config)
