@@ -3,14 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	"net/http"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/gorilla/mux"
 	//	"github.com/pkg/profile"
 )
 
@@ -49,7 +49,12 @@ func runRouter(address string, port int) {
 
 	// Create HTTP router
 	router := mux.NewRouter()
+
+	// JSON endpoint
 	router.HandleFunc("/stats", getState).Methods("GET")
+
+	// Prometheus endpoint
+	router.Path("/prometheus").Handler(promhttp.Handler())
 
 	stlog.Fatal(http.ListenAndServe(netAddress, router))
 }

@@ -2,11 +2,15 @@ package main
 
 import (
 	"flag"
-	log "github.com/sirupsen/logrus"
+	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	//	"github.com/pkg/profile"
 )
 
@@ -51,11 +55,27 @@ func getHostname() string {
 func main() {
 	//	defer profile.Start().Stop()
 
+	viper.SetDefault("instance", "default")
+	viper.SetDefault("immutablePrefix", "")
+
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+	viper.AddConfigPath("./")
+	viper.AddConfigPath("$HOME/.groxy/")
+	viper.AddConfigPath("/etc/groxy/")
+	err := viper.ReadInConfig()
+	if err != nil {
+		panic(fmt.Errorf("Fatal error config file: %w \n", err))
+	}
+
+	viper.SetEnvPrefix("GROXY")
+	viper.AutomaticEnv()
+
 	var instance string
 	var tenant string
 	var forceTenant bool
 	var prefix string
-	var immutablePrefix arrayFlags
+	var immutablePrefix string
 	var graphiteAddress string
 	var graphitePort int
 	var statsAddress string
@@ -83,11 +103,11 @@ func main() {
 	var compressedOutput bool
 	var compressedInput bool
 
-	flag.StringVar(&instance, "instance", "default", "Groxy instance name (for log and metrics)")
+	flag.StringVar(&instance, "instance", viper.GetString("instance"), "Groxy instance name (for log and metrics)")
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
 	flag.BoolVar(&forceTenant, "forceTenant", false, "Overwrite metrics tenant even if it is already set")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
-	flag.Var(&immutablePrefix, "immutablePrefix", "Do not add prefix to metrics start with. Could be set many times")
+	flag.StringVar(&immutablePrefix, "immutablePrefix", viper.GetString("immutablePrefix"), "Do not add prefix to metrics start with. Could be set many times")
 	flag.StringVar(&graphiteAddress, "graphiteAddress", "", "Graphite server DNS name")
 	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server TCP port")
 	flag.StringVar(&statsAddress, "statsAddress", "127.0.0.1", "Proxy stats bind address")
@@ -116,6 +136,11 @@ func main() {
 	flag.StringVar(&hostname, "hostname", "", "Hostname of a computer running Groxy")
 
 	flag.Parse()
+
+	// Convert standard flags to Viper's
+	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
+	pflag.Parse()
+	viper.BindPFlags(pflag.CommandLine)
 
 	// Setup logging
 	log.SetOutput(os.Stdout)

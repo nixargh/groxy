@@ -4,10 +4,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added
+- `state.go` **/prometheus** endpoint with basic GO metrics.
+
 ## [2.1.0] - 2022-01-30
 ### Added
 - Mutual TLS support.
-- New parameter **-forceTenant** that allows to revrite metric tenant if it is already set.
+- New parameter **-forceTenant** that allows to rewrite metric tenant if it is already set.
 
 ## [2.0.1] - 2022-01-08
 ### Fixed
