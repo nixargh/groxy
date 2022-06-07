@@ -6,14 +6,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"io/ioutil"
 	"net"
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"time"
+
+	log "github.com/sirupsen/logrus"
 	//	"github.com/pkg/profile"
 )
 
@@ -104,7 +104,6 @@ func runReceiver(
 }
 
 func readMetric(connection net.Conn, inputChan chan *Metric, compress bool) {
-	connection.SetReadDeadline(time.Now().Add(600 * time.Second))
 	var uncompressedConn io.ReadCloser
 	var err error
 

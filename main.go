@@ -2,15 +2,17 @@ package main
 
 import (
 	"flag"
-	log "github.com/sirupsen/logrus"
+	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 	//	"github.com/pkg/profile"
 )
 
-var version string = "2.1.0"
+var version string = "2.2.0"
 
 var clog, slog, rlog, tlog, stlog *log.Entry
 
@@ -82,6 +84,7 @@ func main() {
 	var hostname string
 	var compressedOutput bool
 	var compressedInput bool
+	var showVersion bool
 
 	flag.StringVar(&instance, "instance", "default", "Groxy instance name (for log and metrics)")
 	flag.StringVar(&tenant, "tenant", "", "Graphite project name to store metrics in")
@@ -114,11 +117,17 @@ func main() {
 	flag.StringVar(&systemTenant, "systemTenant", "", "Graphite project name to store SELF metrics in. By default is equal to 'tenant'")
 	flag.StringVar(&systemPrefix, "systemPrefix", "", "Prefix to add to any SELF metric. By default is equal to 'prefix'")
 	flag.StringVar(&hostname, "hostname", "", "Hostname of a computer running Groxy")
+	flag.BoolVar(&showVersion, "version", false, "Groxy version")
 
 	flag.Parse()
 
 	// Setup logging
 	log.SetOutput(os.Stdout)
+
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(1)
+	}
 
 	if jsonLog == true {
 		log.SetFormatter(&log.JSONFormatter{})
@@ -214,7 +223,6 @@ func main() {
 		state.OutBpm = atomic.LoadInt64(&state.OutBytes) - out_bytes
 
 		clog.WithFields(log.Fields{"state": state}).Info("Dumping state.")
-
 		sendStateMetrics(instance, hostname, systemTenant, systemPrefix, inputChan)
 	}
 }
