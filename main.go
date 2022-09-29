@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"strconv"
 
 	log "github.com/sirupsen/logrus"
 	//	"github.com/pkg/profile"
@@ -58,8 +59,7 @@ func main() {
 	var forceTenant bool
 	var prefix string
 	var immutablePrefix arrayFlags
-	var graphiteAddress string
-	var graphitePort int
+	var graphiteAddress arrayFlags
 	var statsAddress string
 	var statsPort int
 	var address string
@@ -91,8 +91,7 @@ func main() {
 	flag.BoolVar(&forceTenant, "forceTenant", false, "Overwrite metrics tenant even if it is already set")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
 	flag.Var(&immutablePrefix, "immutablePrefix", "Do not add prefix to metrics start with. Could be set many times")
-	flag.StringVar(&graphiteAddress, "graphiteAddress", "", "Graphite server DNS name")
-	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server TCP port")
+	flag.Var(&graphiteAddress, "graphiteAddress", "Graphite server DNS name : Graphite server TCP port")
 	flag.StringVar(&statsAddress, "statsAddress", "127.0.0.1", "Proxy stats bind address")
 	flag.IntVar(&statsPort, "statsPort", 3003, "Proxy stats port")
 	flag.StringVar(&address, "address", "127.0.0.1", "Proxy bind address")
@@ -156,7 +155,7 @@ func main() {
 	clog.Info("Groxy rocks!")
 
 	// Validate variables
-	if graphiteAddress == "" {
+	if graphiteAddress == nil {
 		clog.Fatal("You must set '-graphiteAddress'.")
 	}
 
@@ -173,7 +172,6 @@ func main() {
 	}
 
 	inputChan := make(chan *Metric, 10000000)
-	outputChan := make(chan *Metric, 10000000)
 
 	go runReceiver(
 		address,
@@ -187,18 +185,30 @@ func main() {
 		ignoreCert,
 		compressedInput)
 
-	go runSender(
-		graphiteAddress,
-		graphitePort,
-		outputChan,
-		tlsOutput,
-		mtlsOutput,
-		tlsOutputCaCert,
-		tlsOutputCert,
-		tlsOutputKey,
-		ignoreCert,
-		limitPerSec,
-		compressedOutput)
+	for i := range graphiteAddress {
+		outputChan := make(chan *Metric, 10000000)
+
+		ga := strings.Split(graphiteAddress[i], ":")
+		host := ga[0]
+		port, err := strconv.Atoi(ga[1])
+		if err != nil {
+			clog.Fatal("Can't get integer port from '-graphiteAddress'.")
+		}
+
+		go runSender(
+			host,
+			port,
+			outputChan,
+			tlsOutput,
+			mtlsOutput,
+			tlsOutputCaCert,
+			tlsOutputCert,
+			tlsOutputKey,
+			ignoreCert,
+			limitPerSec,
+			compressedOutput)
+
+	}
 
 	go runTransformer(inputChan, outputChan, tenant, forceTenant, prefix, immutablePrefix)
 	go runRouter(statsAddress, statsPort)
