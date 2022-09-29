@@ -4,18 +4,18 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
-	"strconv"
 
 	log "github.com/sirupsen/logrus"
 	//	"github.com/pkg/profile"
 )
 
-var version string = "2.2.0"
+var version string = "3.0.0"
 
-var clog, slog, rlog, tlog, stlog *log.Entry
+var clog, rlog, tlog, stlog *log.Entry
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -185,17 +185,28 @@ func main() {
 		ignoreCert,
 		compressedInput)
 
-	for i := range graphiteAddress {
+	var outputChans []chan *Metric
+	for id := range graphiteAddress {
 		outputChan := make(chan *Metric, 10000000)
+		outputChans = append(outputChans, outputChan)
 
-		ga := strings.Split(graphiteAddress[i], ":")
+		ga := strings.Split(graphiteAddress[id], ":")
 		host := ga[0]
 		port, err := strconv.Atoi(ga[1])
 		if err != nil {
 			clog.Fatal("Can't get integer port from '-graphiteAddress'.")
 		}
 
+		// Init sender counters that are slices
+		state.Out = append(state.Out, 0)
+		state.OutBytes = append(state.OutBytes, 0)
+		state.Returned = append(state.Returned, 0)
+		state.OutQueue = append(state.OutQueue, 0)
+		state.Queue = append(state.Queue, 0)
+		state.NegativeQueueError = append(state.NegativeQueueError, 0)
+
 		go runSender(
+			id,
 			host,
 			port,
 			outputChan,
@@ -210,7 +221,7 @@ func main() {
 
 	}
 
-	go runTransformer(inputChan, outputChan, tenant, forceTenant, prefix, immutablePrefix)
+	go runTransformer(inputChan, outputChans, tenant, forceTenant, prefix, immutablePrefix)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
 
@@ -218,19 +229,25 @@ func main() {
 	clog.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
 	for {
 		in := atomic.LoadInt64(&state.In)
-		out := atomic.LoadInt64(&state.Out)
-		transformed := atomic.LoadInt64(&state.Transformed)
 		bad := atomic.LoadInt64(&state.Bad)
-		out_bytes := atomic.LoadInt64(&state.OutBytes)
+		transformed := atomic.LoadInt64(&state.Transformed)
 
 		time.Sleep(time.Duration(sleepSeconds) * time.Second)
 
 		// Calculate MPMs
 		state.InMpm = atomic.LoadInt64(&state.In) - in
-		state.OutMpm = atomic.LoadInt64(&state.Out) - out
-		state.TransformedMpm = atomic.LoadInt64(&state.Transformed) - transformed
 		state.BadMpm = atomic.LoadInt64(&state.Bad) - bad
-		state.OutBpm = atomic.LoadInt64(&state.OutBytes) - out_bytes
+		state.TransformedMpm = atomic.LoadInt64(&state.Transformed) - transformed
+
+		// For multiple senders
+		for id := range graphiteAddress {
+			out := atomic.LoadInt64(&state.Out[id])
+			out_bytes := atomic.LoadInt64(&state.OutBytes[id])
+
+			// Calculate MPMs
+			state.OutMpm = atomic.LoadInt64(&state.Out[id]) - out
+			state.OutBpm = atomic.LoadInt64(&state.OutBytes[id]) - out_bytes
+		}
 
 		clog.WithFields(log.Fields{"state": state}).Info("Dumping state.")
 		sendStateMetrics(instance, hostname, systemTenant, systemPrefix, inputChan)
