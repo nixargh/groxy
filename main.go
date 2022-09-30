@@ -6,7 +6,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -16,6 +15,11 @@ import (
 var version string = "3.0.0"
 
 var clog, rlog, tlog, stlog *log.Entry
+
+var instance string
+var hostname string
+var systemTenant string
+var systemPrefix string
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -54,7 +58,6 @@ func getHostname() string {
 func main() {
 	//	defer profile.Start().Stop()
 
-	var instance string
 	var tenant string
 	var forceTenant bool
 	var prefix string
@@ -79,9 +82,6 @@ func main() {
 	var debug bool
 	var logCaller bool
 	var limitPerSec int
-	var systemTenant string
-	var systemPrefix string
-	var hostname string
 	var compressedOutput bool
 	var compressedInput bool
 	var showVersion bool
@@ -198,12 +198,19 @@ func main() {
 		}
 
 		// Init sender counters that are slices
+		state.SendError = append(state.SendError, 0)
 		state.Out = append(state.Out, 0)
 		state.OutBytes = append(state.OutBytes, 0)
+		state.OutMpm = append(state.OutMpm, 0)
+		state.OutBpm = append(state.OutBpm, 0)
 		state.Returned = append(state.Returned, 0)
 		state.OutQueue = append(state.OutQueue, 0)
 		state.Queue = append(state.Queue, 0)
 		state.NegativeQueueError = append(state.NegativeQueueError, 0)
+		state.ConnectionError = append(state.ConnectionError, 0)
+		state.Connection = append(state.Connection, 0)
+		state.ConnectionAlive = append(state.ConnectionAlive, 0)
+		state.PacksOverflewError = append(state.PacksOverflewError, 0)
 
 		go runSender(
 			id,
@@ -224,32 +231,12 @@ func main() {
 	go runTransformer(inputChan, outputChans, tenant, forceTenant, prefix, immutablePrefix)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
+	go updatePerMinuteCounters(graphiteAddress, inputChan)
 
 	sleepSeconds := 60
 	clog.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
 	for {
-		in := atomic.LoadInt64(&state.In)
-		bad := atomic.LoadInt64(&state.Bad)
-		transformed := atomic.LoadInt64(&state.Transformed)
-
+		sendStateMetrics(inputChan)
 		time.Sleep(time.Duration(sleepSeconds) * time.Second)
-
-		// Calculate MPMs
-		state.InMpm = atomic.LoadInt64(&state.In) - in
-		state.BadMpm = atomic.LoadInt64(&state.Bad) - bad
-		state.TransformedMpm = atomic.LoadInt64(&state.Transformed) - transformed
-
-		// For multiple senders
-		for id := range graphiteAddress {
-			out := atomic.LoadInt64(&state.Out[id])
-			out_bytes := atomic.LoadInt64(&state.OutBytes[id])
-
-			// Calculate MPMs
-			state.OutMpm = atomic.LoadInt64(&state.Out[id]) - out
-			state.OutBpm = atomic.LoadInt64(&state.OutBytes[id]) - out_bytes
-		}
-
-		clog.WithFields(log.Fields{"state": state}).Info("Dumping state.")
-		sendStateMetrics(instance, hostname, systemTenant, systemPrefix, inputChan)
 	}
 }

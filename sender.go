@@ -72,12 +72,12 @@ func runSender(
 				slog)
 			if err != nil {
 				slog.WithFields(log.Fields{"error": err}).Error("Can't create connection.")
-				atomic.AddInt64(&state.ConnectionError, 1)
+				atomic.AddInt64(&state.ConnectionError[id], 1)
 				time.Sleep(5 * time.Second)
 				continue
 			} else {
-				atomic.AddInt64(&state.Connection, 1)
-				atomic.AddInt64(&state.ConnectionAlive, 1)
+				atomic.AddInt64(&state.Connection[id], 1)
+				atomic.AddInt64(&state.ConnectionAlive[id], 1)
 			}
 
 			// collect a pack of metrics
@@ -100,7 +100,7 @@ func runSender(
 			}
 		} else {
 			slog.Warning("Limit of metric packs per second overflew.")
-			atomic.AddInt64(&state.PacksOverflewError, 1)
+			atomic.AddInt64(&state.PacksOverflewError[id], 1)
 			time.Sleep(1 * time.Second)
 		}
 	}
@@ -243,7 +243,7 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 
 	if err != nil {
 		slog.WithFields(log.Fields{"error": err}).Error("Connection write error.")
-		atomic.AddInt64(&state.SendError, 1)
+		atomic.AddInt64(&state.SendError[id], 1)
 
 		connectionAlive = false
 
@@ -266,7 +266,7 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 	}
 
 	connection.Close()
-	atomic.AddInt64(&state.ConnectionAlive, -1)
+	atomic.AddInt64(&state.ConnectionAlive[id], -1)
 	slog.WithFields(log.Fields{
 		"sent_bytes":   packDataLength,
 		"sent_num":     sent,
