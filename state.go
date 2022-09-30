@@ -28,19 +28,20 @@ type State struct {
 	TransformedMpm int64 `json:"transformed_mpm" type:"int"`
 	TransformQueue int64 `json:"transform_queue" type:"int"`
 	// Sender metrics
-	Connection         []int64 `json:"connection" type:"slice"`
-	ConnectionAlive    []int64 `json:"connection_alive" type:"slice"`
-	ConnectionError    []int64 `json:"connection_error" type:"slice"`
-	Out                []int64 `json:"out" type:"slice"`
-	OutBytes           []int64 `json:"out_bytes" type:"slice"`
-	Returned           []int64 `json:"returned" type:"slice"`
-	SendError          []int64 `json:"send_error" type:"slice"`
-	OutQueue           []int64 `json:"out_queue" type:"slice"`
-	Queue              []int64 `json:"queue" type:"slice"`
-	NegativeQueueError []int64 `json:"negative_queue_error" type:"slice"`
-	PacksOverflewError []int64 `json:"packs_overflew_error" type:"slice"`
-	OutMpm             []int64 `json:"out_mpm" type:"slice"`
-	OutBpm             []int64 `json:"out_bpm" type:"slice"`
+	Destination        []string `json:"destination" type:"slice"`
+	Connection         []int64  `json:"connection" type:"slice"`
+	ConnectionAlive    []int64  `json:"connection_alive" type:"slice"`
+	ConnectionError    []int64  `json:"connection_error" type:"slice"`
+	Out                []int64  `json:"out" type:"slice"`
+	OutBytes           []int64  `json:"out_bytes" type:"slice"`
+	Returned           []int64  `json:"returned" type:"slice"`
+	SendError          []int64  `json:"send_error" type:"slice"`
+	OutQueue           []int64  `json:"out_queue" type:"slice"`
+	Queue              []int64  `json:"queue" type:"slice"`
+	NegativeQueueError []int64  `json:"negative_queue_error" type:"slice"`
+	PacksOverflewError []int64  `json:"packs_overflew_error" type:"slice"`
+	OutMpm             []int64  `json:"out_mpm" type:"slice"`
+	OutBpm             []int64  `json:"out_bpm" type:"slice"`
 }
 
 func runRouter(address string, port int) {
@@ -96,23 +97,29 @@ func sendStateMetrics(inputChan chan *Metric) {
 		metricName := structfield.Tag.Get("json")
 		valueField := values.Field(i)
 
-		if name == "Version" {
+		switch name {
+		case "Version":
 			value := strings.Replace(valueField.String(), ".", "", 2)
 			doSend(name, metricName, value, timestamp, inputChan)
-		} else {
-			switch vtype {
-			case "int":
-				value := fmt.Sprintf("%d", valueField.Int())
+			continue
+		case "Destination":
+			value := fmt.Sprintf("%d", valueField.Len())
+			doSend(name, metricName, value, timestamp, inputChan)
+			continue
+		}
+
+		switch vtype {
+		case "int":
+			value := fmt.Sprintf("%d", valueField.Int())
+			doSend(name, metricName, value, timestamp, inputChan)
+		case "slice":
+			for id := 0; id < valueField.Len(); id++ {
+				metricName = fmt.Sprintf("%s_%d", structfield.Tag.Get("json"), id)
+				value := fmt.Sprintf("%d", valueField.Index(id).Int())
 				doSend(name, metricName, value, timestamp, inputChan)
-			case "slice":
-				for id := 0; id < valueField.Len(); id++ {
-					metricName = fmt.Sprintf("%s_%d", structfield.Tag.Get("json"), id)
-					value := fmt.Sprintf("%d", valueField.Index(id).Int())
-					doSend(name, metricName, value, timestamp, inputChan)
-				}
-			default:
-				stlog.WithFields(log.Fields{"vtype": vtype}).Fatal("Unknown state value type.")
 			}
+		default:
+			stlog.WithFields(log.Fields{"vtype": vtype}).Fatal("Unknown state value type.")
 		}
 	}
 }
@@ -149,40 +156,4 @@ func doSend(
 	// Pass to transformation
 	inputChan <- &metric
 	atomic.AddInt64(&state.In, 1)
-}
-
-func updatePerMinuteCounters(graphiteAddress []string, inputChan chan *Metric) {
-	sleepSeconds := 60
-	stlog.WithFields(log.Fields{
-		"graphiteAddress": graphiteAddress,
-		"sleepSeconds":    sleepSeconds,
-	}).Info("Starting PerMinuteCounters Updater loop.")
-
-	for {
-		in := atomic.LoadInt64(&state.In)
-		bad := atomic.LoadInt64(&state.Bad)
-		transformed := atomic.LoadInt64(&state.Transformed)
-		var out, out_bytes []int64
-
-		// For multiple senders
-		for id := range graphiteAddress {
-			out = append(out, atomic.LoadInt64(&state.Out[id]))
-			out_bytes = append(out_bytes, atomic.LoadInt64(&state.OutBytes[id]))
-		}
-
-		// Sleep for a minute
-		time.Sleep(time.Duration(sleepSeconds) * time.Second)
-
-		stlog.WithFields(log.Fields{"graphiteAddress": graphiteAddress}).Info("Updating per-minute metrics.")
-		// Calculate MPMs
-		atomic.StoreInt64(&state.InMpm, atomic.LoadInt64(&state.In)-in)
-		atomic.StoreInt64(&state.BadMpm, atomic.LoadInt64(&state.Bad)-bad)
-		atomic.StoreInt64(&state.TransformedMpm, atomic.LoadInt64(&state.Transformed)-transformed)
-
-		// For multiple senders
-		for id := range graphiteAddress {
-			atomic.StoreInt64(&state.OutMpm[id], atomic.LoadInt64(&state.Out[id])-out[id])
-			atomic.StoreInt64(&state.OutBpm[id], atomic.LoadInt64(&state.OutBytes[id])-out_bytes[id])
-		}
-	}
 }

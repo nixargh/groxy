@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -198,6 +199,7 @@ func main() {
 		}
 
 		// Init sender counters that are slices
+		state.Destination = append(state.Destination, graphiteAddress[id])
 		state.SendError = append(state.SendError, 0)
 		state.Out = append(state.Out, 0)
 		state.OutBytes = append(state.OutBytes, 0)
@@ -231,12 +233,38 @@ func main() {
 	go runTransformer(inputChan, outputChans, tenant, forceTenant, prefix, immutablePrefix)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
-	go updatePerMinuteCounters(graphiteAddress, inputChan)
 
 	sleepSeconds := 60
 	clog.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
 	for {
-		sendStateMetrics(inputChan)
+		// Get initial values
+		in := atomic.LoadInt64(&state.In)
+		bad := atomic.LoadInt64(&state.Bad)
+		transformed := atomic.LoadInt64(&state.Transformed)
+		var out, out_bytes []int64
+
+		// For multiple senders
+		for id := range graphiteAddress {
+			out = append(out, atomic.LoadInt64(&state.Out[id]))
+			out_bytes = append(out_bytes, atomic.LoadInt64(&state.OutBytes[id]))
+		}
+
+		// Sleep for a minute
 		time.Sleep(time.Duration(sleepSeconds) * time.Second)
+
+		stlog.WithFields(log.Fields{"graphiteAddress": graphiteAddress}).Info("Updating per-minute metrics.")
+		// Calculate MPMs
+		atomic.StoreInt64(&state.InMpm, atomic.LoadInt64(&state.In)-in)
+		atomic.StoreInt64(&state.BadMpm, atomic.LoadInt64(&state.Bad)-bad)
+		atomic.StoreInt64(&state.TransformedMpm, atomic.LoadInt64(&state.Transformed)-transformed)
+
+		// For multiple senders
+		for id := range graphiteAddress {
+			atomic.StoreInt64(&state.OutMpm[id], atomic.LoadInt64(&state.Out[id])-out[id])
+			atomic.StoreInt64(&state.OutBpm[id], atomic.LoadInt64(&state.OutBytes[id])-out_bytes[id])
+		}
+
+		// Send State metrics
+		sendStateMetrics(inputChan)
 	}
 }
