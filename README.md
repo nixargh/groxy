@@ -2,6 +2,7 @@
 Graphite Proxy in Golang
 
 ## Features
+- Send metrics to multiple destinations (only host and port may differ but not TLS options).
 - TLS for input & output connections.
 - Add configurable tenant.
 - Add configurable prefix.
@@ -22,7 +23,7 @@ Get help
 
 Run with some options
 
-`./groxy -port 2004 -graphiteAddress localhost -tenant techops -prefix "groxy" -immutablePrefix "test." -TLS -ignoreCert true`
+`./groxy -port 2004 -graphiteAddress localhost:2003 -tenant techops -prefix "groxy" -immutablePrefix "test." -TLS -ignoreCert true`
 
 ## Test
 Send metric like this
