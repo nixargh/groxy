@@ -6,15 +6,16 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	log "github.com/sirupsen/logrus"
 	"io/ioutil"
 	"net"
 	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 	//	"github.com/pkg/profile"
 )
 
-func limitRefresher(limitPerSec *int) {
+func limitRefresher(limitPerSec *int, slog *log.Entry) {
 	savedLimit := *limitPerSec
 	slog.WithFields(log.Fields{"limitPerSec": savedLimit}).Info("Starting Packs Limit Refresher.")
 
@@ -25,6 +26,7 @@ func limitRefresher(limitPerSec *int) {
 }
 
 func runSender(
+	id int,
 	host string,
 	port int,
 	outputChan chan *Metric,
@@ -36,6 +38,8 @@ func runSender(
 	ignoreCert bool,
 	limitPerSec int,
 	compress bool) {
+
+	var slog *log.Entry
 	slog = clog.WithFields(log.Fields{
 		"host":       host,
 		"port":       port,
@@ -44,11 +48,12 @@ func runSender(
 		"ignoreCert": ignoreCert,
 		"compress":   compress,
 		"thread":     "sender",
+		"id":         id,
 	})
 	slog.Info("Starting Sender.")
 
 	// Start limit refresher thread
-	go limitRefresher(&limitPerSec)
+	go limitRefresher(&limitPerSec, slog)
 
 	for {
 		curLimit := limitPerSec
@@ -63,15 +68,16 @@ func runSender(
 				tlsCaCert,
 				tlsCert,
 				tlsKey,
-				ignoreCert)
+				ignoreCert,
+				slog)
 			if err != nil {
 				slog.WithFields(log.Fields{"error": err}).Error("Can't create connection.")
-				atomic.AddInt64(&state.ConnectionError, 1)
+				atomic.AddInt64(&state.ConnectionError[id], 1)
 				time.Sleep(5 * time.Second)
 				continue
 			} else {
-				atomic.AddInt64(&state.Connection, 1)
-				atomic.AddInt64(&state.ConnectionAlive, 1)
+				atomic.AddInt64(&state.Connection[id], 1)
+				atomic.AddInt64(&state.ConnectionAlive[id], 1)
 			}
 
 			// collect a pack of metrics
@@ -89,12 +95,12 @@ func runSender(
 
 			// send the pack
 			if len(metrics) > 0 {
-				go sendMetric(&metrics, connection, outputChan, compress)
+				go sendMetric(&metrics, connection, outputChan, compress, slog, id)
 				limitPerSec--
 			}
 		} else {
 			slog.Warning("Limit of metric packs per second overflew.")
-			atomic.AddInt64(&state.PacksOverflewError, 1)
+			atomic.AddInt64(&state.PacksOverflewError[id], 1)
 			time.Sleep(1 * time.Second)
 		}
 	}
@@ -108,7 +114,8 @@ func createConnection(
 	tlsCaCert string,
 	tlsCert string,
 	tlsKey string,
-	ignoreCert bool) (net.Conn, error) {
+	ignoreCert bool,
+	slog *log.Entry) (net.Conn, error) {
 	netAddress := fmt.Sprintf("%s:%d", host, port)
 	slog.Debug("Connecting to Graphite.")
 
@@ -169,7 +176,7 @@ func createConnection(
 	return connection, err
 }
 
-func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *Metric, compress bool) {
+func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *Metric, compress bool, slog *log.Entry, id int) {
 	buffered := 0
 	sent := 0
 	returned := 0
@@ -236,7 +243,7 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 
 	if err != nil {
 		slog.WithFields(log.Fields{"error": err}).Error("Connection write error.")
-		atomic.AddInt64(&state.SendError, 1)
+		atomic.AddInt64(&state.SendError[id], 1)
 
 		connectionAlive = false
 
@@ -256,16 +263,18 @@ func sendMetric(metrics *[10000]*Metric, connection net.Conn, outputChan chan *M
 		}).Debug("Metrics pack sent.")
 
 		sent += buffered
-
-		atomic.AddInt64(&state.OutBytes, int64(packDataLength))
-		atomic.AddInt64(&state.Out, int64(buffered))
 	}
 
 	connection.Close()
-	atomic.AddInt64(&state.ConnectionAlive, -1)
+	atomic.AddInt64(&state.ConnectionAlive[id], -1)
 	slog.WithFields(log.Fields{
 		"sent_bytes":   packDataLength,
 		"sent_num":     sent,
 		"returned_num": returned,
 	}).Info("Pack is finished.")
+
+	// Increment per sender counters
+	atomic.AddInt64(&state.OutBytes[id], int64(packDataLength))
+	atomic.AddInt64(&state.Out[id], int64(sent))
+	atomic.AddInt64(&state.Returned[id], int64(returned))
 }

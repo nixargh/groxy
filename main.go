@@ -4,17 +4,25 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	//	"github.com/pkg/profile"
 )
 
-var version string = "2.2.0"
+var version string = "3.1.0"
 
-var clog, slog, rlog, tlog, stlog *log.Entry
+var clog, rlog, tlog, stlog *log.Entry
+
+var instance string
+var hostname string
+var systemTenant string
+var systemPrefix string
 
 type Metric struct {
 	Prefix    string `json:"prefix,omitempty"`
@@ -53,13 +61,11 @@ func getHostname() string {
 func main() {
 	//	defer profile.Start().Stop()
 
-	var instance string
 	var tenant string
 	var forceTenant bool
 	var prefix string
 	var immutablePrefix arrayFlags
-	var graphiteAddress string
-	var graphitePort int
+	var graphiteAddress arrayFlags
 	var statsAddress string
 	var statsPort int
 	var address string
@@ -79,9 +85,6 @@ func main() {
 	var debug bool
 	var logCaller bool
 	var limitPerSec int
-	var systemTenant string
-	var systemPrefix string
-	var hostname string
 	var compressedOutput bool
 	var compressedInput bool
 	var showVersion bool
@@ -91,8 +94,7 @@ func main() {
 	flag.BoolVar(&forceTenant, "forceTenant", false, "Overwrite metrics tenant even if it is already set")
 	flag.StringVar(&prefix, "prefix", "", "Prefix to add to any metric")
 	flag.Var(&immutablePrefix, "immutablePrefix", "Do not add prefix to metrics start with. Could be set many times")
-	flag.StringVar(&graphiteAddress, "graphiteAddress", "", "Graphite server DNS name")
-	flag.IntVar(&graphitePort, "graphitePort", 2003, "Graphite server TCP port")
+	flag.Var(&graphiteAddress, "graphiteAddress", "Graphite server DNS name : Graphite server TCP port")
 	flag.StringVar(&statsAddress, "statsAddress", "127.0.0.1", "Proxy stats bind address")
 	flag.IntVar(&statsPort, "statsPort", 3003, "Proxy stats port")
 	flag.StringVar(&address, "address", "127.0.0.1", "Proxy bind address")
@@ -126,7 +128,7 @@ func main() {
 
 	if showVersion {
 		fmt.Println(version)
-		os.Exit(1)
+		os.Exit(0)
 	}
 
 	if jsonLog == true {
@@ -156,7 +158,7 @@ func main() {
 	clog.Info("Groxy rocks!")
 
 	// Validate variables
-	if graphiteAddress == "" {
+	if graphiteAddress == nil {
 		clog.Fatal("You must set '-graphiteAddress'.")
 	}
 
@@ -173,7 +175,6 @@ func main() {
 	}
 
 	inputChan := make(chan *Metric, 10000000)
-	outputChan := make(chan *Metric, 10000000)
 
 	go runReceiver(
 		address,
@@ -187,42 +188,100 @@ func main() {
 		ignoreCert,
 		compressedInput)
 
-	go runSender(
-		graphiteAddress,
-		graphitePort,
-		outputChan,
-		tlsOutput,
-		mtlsOutput,
-		tlsOutputCaCert,
-		tlsOutputCert,
-		tlsOutputKey,
-		ignoreCert,
-		limitPerSec,
-		compressedOutput)
+	var outputChans []chan *Metric
+	for id := range graphiteAddress {
+		outputChan := make(chan *Metric, 10000000)
+		outputChans = append(outputChans, outputChan)
 
-	go runTransformer(inputChan, outputChan, tenant, forceTenant, prefix, immutablePrefix)
+		ga := strings.Split(graphiteAddress[id], ":")
+		host := ga[0]
+		port, err := strconv.Atoi(ga[1])
+		if err != nil {
+			clog.Fatal("Can't get integer port from '-graphiteAddress'.")
+		}
+
+		// Init sender counters that are slices
+		state.Destination = append(state.Destination, graphiteAddress[id])
+		state.SendError = append(state.SendError, 0)
+		state.Out = append(state.Out, 0)
+		state.OutBytes = append(state.OutBytes, 0)
+		state.OutMpm = append(state.OutMpm, 0)
+		state.OutBpm = append(state.OutBpm, 0)
+		state.Returned = append(state.Returned, 0)
+		state.OutQueue = append(state.OutQueue, 0)
+		state.Queue = append(state.Queue, 0)
+		state.NegativeQueueError = append(state.NegativeQueueError, 0)
+		state.ConnectionError = append(state.ConnectionError, 0)
+		state.Connection = append(state.Connection, 0)
+		state.ConnectionAlive = append(state.ConnectionAlive, 0)
+		state.PacksOverflewError = append(state.PacksOverflewError, 0)
+
+		go runSender(
+			id,
+			host,
+			port,
+			outputChan,
+			tlsOutput,
+			mtlsOutput,
+			tlsOutputCaCert,
+			tlsOutputCert,
+			tlsOutputKey,
+			ignoreCert,
+			limitPerSec,
+			compressedOutput)
+
+	}
+
+	go runTransformer(inputChan, outputChans, tenant, forceTenant, prefix, immutablePrefix)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
+	go waitForDeath()
 
 	sleepSeconds := 60
 	clog.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
 	for {
+		// Get initial values
 		in := atomic.LoadInt64(&state.In)
-		out := atomic.LoadInt64(&state.Out)
-		transformed := atomic.LoadInt64(&state.Transformed)
 		bad := atomic.LoadInt64(&state.Bad)
-		out_bytes := atomic.LoadInt64(&state.OutBytes)
+		transformed := atomic.LoadInt64(&state.Transformed)
+		var out, out_bytes []int64
 
+		// For multiple senders
+		for id := range graphiteAddress {
+			out = append(out, atomic.LoadInt64(&state.Out[id]))
+			out_bytes = append(out_bytes, atomic.LoadInt64(&state.OutBytes[id]))
+		}
+
+		// Sleep for a minute
 		time.Sleep(time.Duration(sleepSeconds) * time.Second)
 
+		stlog.WithFields(log.Fields{"graphiteAddress": graphiteAddress}).Info("Updating per-minute metrics.")
 		// Calculate MPMs
-		state.InMpm = atomic.LoadInt64(&state.In) - in
-		state.OutMpm = atomic.LoadInt64(&state.Out) - out
-		state.TransformedMpm = atomic.LoadInt64(&state.Transformed) - transformed
-		state.BadMpm = atomic.LoadInt64(&state.Bad) - bad
-		state.OutBpm = atomic.LoadInt64(&state.OutBytes) - out_bytes
+		atomic.StoreInt64(&state.InMpm, atomic.LoadInt64(&state.In)-in)
+		atomic.StoreInt64(&state.BadMpm, atomic.LoadInt64(&state.Bad)-bad)
+		atomic.StoreInt64(&state.TransformedMpm, atomic.LoadInt64(&state.Transformed)-transformed)
 
-		clog.WithFields(log.Fields{"state": state}).Info("Dumping state.")
-		sendStateMetrics(instance, hostname, systemTenant, systemPrefix, inputChan)
+		// For multiple senders
+		for id := range graphiteAddress {
+			atomic.StoreInt64(&state.OutMpm[id], atomic.LoadInt64(&state.Out[id])-out[id])
+			atomic.StoreInt64(&state.OutBpm[id], atomic.LoadInt64(&state.OutBytes[id])-out_bytes[id])
+		}
+
+		// Send State metrics
+		sendStateMetrics(inputChan)
+	}
+}
+
+func waitForDeath() {
+	clog.Info("Starting Wait For Death loop.")
+	cancelChan := make(chan os.Signal, 1)
+	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
+
+	for {
+		time.Sleep(time.Duration(1) * time.Second)
+
+		sig := <-cancelChan
+		clog.WithFields(log.Fields{"signal": sig}).Info("Caught signal. Terminating.")
+		os.Exit(0)
 	}
 }

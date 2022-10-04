@@ -1,16 +1,17 @@
 package main
 
 import (
-	log "github.com/sirupsen/logrus"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 	//	"github.com/pkg/profile"
 )
 
 func runTransformer(
 	inputChan chan *Metric,
-	outputChan chan *Metric,
+	outputChans []chan *Metric,
 	tenant string,
 	forceTenant bool,
 	prefix string,
@@ -27,7 +28,7 @@ func runTransformer(
 	for {
 		select {
 		case metric := <-inputChan:
-			go transformMetric(metric, outputChan, tenant, forceTenant, prefix, immutablePrefix)
+			go transformMetric(metric, outputChans, tenant, forceTenant, prefix, immutablePrefix)
 		default:
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -36,7 +37,7 @@ func runTransformer(
 
 func transformMetric(
 	metric *Metric,
-	outputChan chan *Metric,
+	outputChans []chan *Metric,
 	tenant string,
 	forceTenant bool,
 	prefix string,
@@ -64,7 +65,10 @@ func transformMetric(
 	}
 
 	tlog.WithFields(log.Fields{"metric": metric}).Debug("Metric transformed.")
-	outputChan <- metric
+
+	for i := 0; i < len(outputChans); i++ {
+		outputChans[i] <- metric
+	}
 
 	// Update state
 	atomic.AddInt64(&state.Transformed, 1)
