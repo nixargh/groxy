@@ -4,16 +4,18 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	//	"github.com/pkg/profile"
 )
 
-var version string = "3.0.0"
+var version string = "3.1.0"
 
 var clog, rlog, tlog, stlog *log.Entry
 
@@ -126,7 +128,7 @@ func main() {
 
 	if showVersion {
 		fmt.Println(version)
-		os.Exit(1)
+		os.Exit(0)
 	}
 
 	if jsonLog == true {
@@ -233,6 +235,7 @@ func main() {
 	go runTransformer(inputChan, outputChans, tenant, forceTenant, prefix, immutablePrefix)
 	go runRouter(statsAddress, statsPort)
 	go updateQueue(1)
+	go waitForDeath()
 
 	sleepSeconds := 60
 	clog.WithFields(log.Fields{"sleepSeconds": sleepSeconds}).Info("Starting a waiting loop.")
@@ -266,5 +269,19 @@ func main() {
 
 		// Send State metrics
 		sendStateMetrics(inputChan)
+	}
+}
+
+func waitForDeath() {
+	clog.Info("Starting Wait For Death loop.")
+	cancelChan := make(chan os.Signal, 1)
+	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
+
+	for {
+		time.Sleep(time.Duration(1) * time.Second)
+
+		sig := <-cancelChan
+		clog.WithFields(log.Fields{"signal": sig}).Info("Caught signal. Terminating.")
+		os.Exit(0)
 	}
 }
